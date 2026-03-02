@@ -28,6 +28,9 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/routes/tasks.ts` | 定时任务 CRUD + 执行日志查询 |
 | `src/routes/skills.ts` | Skills 列表与管理 |
 | `src/routes/admin.ts` | 用户管理、邀请码、审计日志、注册设置 |
+| `src/routes/browse.ts` | 目录浏览 API（`GET/POST /api/browse/directories`，受挂载白名单约束） |
+| `src/routes/agents.ts` | Sub-Agent CRUD（`GET/POST/DELETE /api/groups/:jid/agents`） |
+| `src/routes/mcp-servers.ts` | MCP Servers 管理（CRUD + `POST /api/mcp-servers/sync-host`，per-user） |
 | `src/feishu.ts` | 飞书连接工厂（`createFeishuConnection`）：WebSocket 长连接、消息去重（LRU 1000 条 / 30min TTL）、富文本卡片、Reaction；`file` 消息下载到工作区；`post` 图文消息仅提取文字 |
 | `src/telegram.ts` | Telegram 连接工厂（`createTelegramConnection`）：Bot API Long Polling、Markdown → HTML 转换、长消息分片（3800 字符）；`message:photo` 下载为 base64 供 Vision；`message:document` 下载文件到工作区 |
 | `src/im-downloader.ts` | IM 文件下载工具：`saveDownloadedFile()` 将 Buffer 写入 `downloads/{channel}/{YYYY-MM-DD}/`，处理路径安全、文件名冲突和 50MB 限制 |
@@ -58,9 +61,6 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/reset-admin.ts` | 管理员密码重置脚本入口 |
 | `src/config.ts` | 常量：路径、超时、并发限制、会话密钥（优先级：环境变量 > 文件 > 生成，0600 权限） |
 | `src/logger.ts` | 日志：pino + pino-pretty |
-| `src/routes/browse.ts` | 目录浏览 API（`GET/POST /api/browse/directories`，受挂载白名单约束） |
-| `src/routes/agents.ts` | Sub-Agent CRUD（`GET/POST/DELETE /api/groups/:jid/agents`） |
-| `src/routes/mcp-servers.ts` | MCP Servers 管理（CRUD + `POST /api/mcp-servers/sync-host`，per-user） |
 
 ### 2.2 前端
 
@@ -359,12 +359,12 @@ data/
   config/registration.json                 # 注册设置（开关、邀请码要求）
   config/session-secret.key                # 会话签名密钥（0600 权限）
   config/system-settings.json              # 系统运行参数（容器超时、并发限制等）
-  config/global-claude-md.template.md      # 全局 CLAUDE.md 模板
   skills/{userId}/                         # 用户级 Skills 数据
   mcp-servers/{userId}/servers.json        # 用户 MCP Servers 配置
 
-config/default-groups.json    # 预注册群组配置
-config/mount-allowlist.json   # 容器挂载白名单
+config/default-groups.json                 # 预注册群组配置
+config/mount-allowlist.json                # 容器挂载白名单
+config/global-claude-md.template.md        # 全局 CLAUDE.md 模板
 
 container/skills/             # 项目级 Skills（挂载到所有容器）
 
