@@ -184,17 +184,10 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (strip <internal> tags)
-          const text = streamedOutput.result
-            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
-            .trim();
-          if (text) {
-            await deps.sendMessage(
-              groupJid,
-              `${deps.assistantName}: ${text}`,
-            );
-          }
-          // Only reset idle timer on actual results, not session-update markers
+          // Scheduled tasks should only produce user-visible output via the
+          // send_message MCP tool (IPC messages/*.json → index.ts polling).
+          // Do NOT forward raw agent text here — it contains intermediate
+          // reasoning / status updates that leak to the user as noise.
           resetIdleTimer();
         }
         if (streamedOutput.status === 'error') {
