@@ -295,9 +295,11 @@ export function initDatabase(): void {
   ensureColumn('sessions', 'agent_id', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('agents', 'kind', "TEXT NOT NULL DEFAULT 'task'");
   ensureColumn('registered_groups', 'target_agent_id', 'TEXT');
+  ensureColumn('registered_groups', 'target_main_jid', 'TEXT');
 
   // Add index on target_agent_id for fast lookup of IM bindings
   db.exec('CREATE INDEX IF NOT EXISTS idx_rg_target_agent ON registered_groups(target_agent_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_rg_target_main ON registered_groups(target_main_jid)');
 
   // Migration: remove UNIQUE constraint from registered_groups.folder
   // Multiple groups (web:main + feishu chats) share folder='main' by design.
@@ -376,6 +378,7 @@ export function initDatabase(): void {
       'is_home',
       'selected_skills',
       'target_agent_id',
+      'target_main_jid',
     ],
     ['trigger_pattern', 'requires_trigger'],
   );
@@ -960,6 +963,7 @@ type RegisteredGroupRow = {
   is_home: number;
   selected_skills: string | null;
   target_agent_id: string | null;
+  target_main_jid: string | null;
 };
 
 /** Convert a raw DB row into a RegisteredGroup domain object. */
@@ -980,6 +984,7 @@ function parseGroupRow(row: RegisteredGroupRow): RegisteredGroup & { jid: string
     is_home: row.is_home === 1,
     selected_skills: row.selected_skills ? JSON.parse(row.selected_skills) : null,
     target_agent_id: row.target_agent_id ?? undefined,
+    target_main_jid: row.target_main_jid ?? undefined,
   };
 }
 
@@ -995,8 +1000,8 @@ export function getRegisteredGroup(
 
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home, selected_skills, target_agent_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, added_at, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, is_home, selected_skills, target_agent_id, target_main_jid)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -1011,6 +1016,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.is_home ? 1 : 0,
     group.selected_skills ? JSON.stringify(group.selected_skills) : null,
     group.target_agent_id ?? null,
+    group.target_main_jid ?? null,
   );
 }
 
@@ -1043,6 +1049,16 @@ export function getGroupsByTargetAgent(agentId: string): Array<{ jid: string; gr
   const rows = db.prepare(
     'SELECT * FROM registered_groups WHERE target_agent_id = ?',
   ).all(agentId) as RegisteredGroupRow[];
+  return rows.map((row) => ({ jid: row.jid, group: parseGroupRow(row) }));
+}
+
+/**
+ * Get all registered groups that route to a specific workspace's main conversation.
+ */
+export function getGroupsByTargetMainJid(webJid: string): Array<{ jid: string; group: RegisteredGroup }> {
+  const rows = db.prepare(
+    'SELECT * FROM registered_groups WHERE target_main_jid = ?',
+  ).all(webJid) as RegisteredGroupRow[];
   return rows.map((row) => ({ jid: row.jid, group: parseGroupRow(row) }));
 }
 

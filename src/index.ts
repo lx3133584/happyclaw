@@ -129,17 +129,106 @@ const IM_SEND_FAIL_THRESHOLD = 3;
 const imHealthCheckFailCounts = new Map<string, number>();
 const IM_HEALTH_CHECK_FAIL_THRESHOLD = 3;
 
-/** Unbind an IM group from its conversation agent, syncing DB + in-memory cache + failure counters. */
+/** Unbind an IM group from its conversation agent or main conversation, syncing DB + in-memory cache + failure counters. */
 function unbindImGroup(jid: string, reason: string): void {
   const group = registeredGroups[jid] ?? getRegisteredGroup(jid);
-  if (!group?.target_agent_id) return;
+  if (!group?.target_agent_id && !group?.target_main_jid) return;
   const agentId = group.target_agent_id;
-  const updated = { ...group, target_agent_id: undefined };
+  const targetMainJid = group.target_main_jid;
+  const updated = { ...group, target_agent_id: undefined, target_main_jid: undefined };
   setRegisteredGroup(jid, updated);
   registeredGroups[jid] = updated;
   imSendFailCounts.delete(jid);
   imHealthCheckFailCounts.delete(jid);
-  logger.info({ jid, agentId }, reason);
+  logger.info({ jid, agentId, targetMainJid }, reason);
+}
+
+/**
+ * Resolve the workspace folder an IM chat should use for file downloads and
+ * execution context. Bound targets take precedence over the source IM folder.
+ */
+function resolveEffectiveFolder(chatJid: string): string | undefined {
+  const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
+  if (!group) return undefined;
+
+  if (group.target_agent_id) {
+    const agent = getAgent(group.target_agent_id);
+    const agentParent = agent
+      ? (registeredGroups[agent.chat_jid] ?? getRegisteredGroup(agent.chat_jid))
+      : null;
+    return agentParent?.folder || group.folder;
+  }
+
+  if (group.target_main_jid) {
+    const targetGroup = registeredGroups[group.target_main_jid]
+      ?? getRegisteredGroup(group.target_main_jid);
+    return targetGroup?.folder || group.target_main_jid.replace(/^web:/, '');
+  }
+
+  return group.folder;
+}
+
+/**
+ * Resolve the effective group for a non-home group by finding its sibling home
+ * group or falling back to the owner's home group execution mode.
+ * Populates registeredGroups cache as a side-effect.
+ */
+function resolveEffectiveGroup(group: RegisteredGroup): { effectiveGroup: RegisteredGroup; isHome: boolean } {
+  if (group.is_home) return { effectiveGroup: group, isHome: true };
+
+  const siblingJids = getJidsByFolder(group.folder);
+  for (const jid of siblingJids) {
+    const sibling = registeredGroups[jid] ?? getRegisteredGroup(jid);
+    if (sibling && !registeredGroups[jid]) registeredGroups[jid] = sibling;
+    if (sibling?.is_home) {
+      return {
+        effectiveGroup: {
+          ...group,
+          executionMode: sibling.executionMode,
+          customCwd: sibling.customCwd || group.customCwd,
+          created_by: group.created_by || sibling.created_by,
+          is_home: true,
+        },
+        isHome: true,
+      };
+    }
+  }
+
+  // Sub-workspace fallback: inherit owner's home group execution mode
+  if (group.created_by) {
+    const ownerHome = getUserHomeGroup(group.created_by);
+    if (ownerHome?.is_home) {
+      return {
+        effectiveGroup: {
+          ...group,
+          executionMode: ownerHome.executionMode,
+          customCwd: ownerHome.customCwd || group.customCwd,
+          created_by: group.created_by,
+        },
+        isHome: false,
+      };
+    }
+  }
+
+  return { effectiveGroup: group, isHome: false };
+}
+
+/** Send a message to an IM channel with automatic fail-count tracking and auto-unbind. */
+function sendImWithFailTracking(imJid: string, text: string): void {
+  imManager.sendMessage(imJid, text).then(() => {
+    imSendFailCounts.delete(imJid);
+  }).catch((err) => {
+    logger.warn({ imJid, err }, 'Failed to relay message to IM');
+    const count = (imSendFailCounts.get(imJid) ?? 0) + 1;
+    imSendFailCounts.set(imJid, count);
+    if (count >= IM_SEND_FAIL_THRESHOLD) {
+      try {
+        unbindImGroup(imJid, 'Auto-unbound IM group after consecutive send failures');
+      } catch (unbindErr) {
+        logger.error({ imJid, unbindErr }, 'Failed to auto-unbind IM group');
+      }
+    }
+  });
 }
 
 function isCursorAfter(candidate: MessageCursor, base: MessageCursor): boolean {
@@ -543,34 +632,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
   if (!group) return true;
 
-  let isHome = !!group.is_home;
-
-  // IM groups (feishu/telegram) sharing a folder with a home group inherit
-  // the home group's execution mode and permissions. This ensures agents run
-  // in the correct mode (e.g., host instead of container) and have access
-  // to home-level capabilities (memory, admin privileges).
-  let effectiveGroup = group;
-  if (!isHome) {
-    const siblingJids = getJidsByFolder(group.folder);
-    for (const jid of siblingJids) {
-      const sibling = registeredGroups[jid] ?? getRegisteredGroup(jid);
-      if (sibling && !registeredGroups[jid]) {
-        registeredGroups[jid] = sibling;
-      }
-      if (sibling?.is_home) {
-        effectiveGroup = {
-          ...group,
-          executionMode: sibling.executionMode,
-          customCwd: sibling.customCwd || group.customCwd,
-          // Preserve explicit IM owner first (critical for per-user global memory).
-          created_by: group.created_by || sibling.created_by,
-          is_home: true,
-        };
-        isHome = true;
-        break;
-      }
-    }
-  }
+  const resolved = resolveEffectiveGroup(group);
+  let effectiveGroup = resolved.effectiveGroup;
+  let isHome = resolved.isHome;
 
   // Get all messages since last agent interaction
   const sinceCursor = lastAgentTimestamp[chatJid] || EMPTY_CURSOR;
@@ -778,6 +842,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             await sendMessage(chatJid, text, {
               sendToIM: shouldReplyToIM,
             });
+
+            // Relay to IM channels bound to this workspace's main conversation
+            const webJid = `web:${effectiveGroup.folder}`;
+            for (const [imJid, g] of Object.entries(registeredGroups)) {
+              if (g.target_main_jid !== webJid || imJid === chatJid) continue;
+              if (getChannelType(imJid)) sendImWithFailTracking(imJid, text);
+            }
+
             sentReply = true;
             // Persist cursor as soon as a visible reply is emitted.
             // Long-lived runners may stay alive for idleTimeout, and waiting
@@ -1770,25 +1842,7 @@ async function processAgentConversation(chatJid: string, agentId: string): Promi
   }
   if (!group) return;
 
-  // Inherit home group properties (same as processGroupMessages)
-  let effectiveGroup = group;
-  if (!group.is_home) {
-    const siblingJids = getJidsByFolder(group.folder);
-    for (const jid of siblingJids) {
-      const sibling = registeredGroups[jid] ?? getRegisteredGroup(jid);
-      if (sibling && !registeredGroups[jid]) registeredGroups[jid] = sibling;
-      if (sibling?.is_home) {
-        effectiveGroup = {
-          ...group,
-          executionMode: sibling.executionMode,
-          customCwd: sibling.customCwd || group.customCwd,
-          created_by: group.created_by || sibling.created_by,
-          is_home: true,
-        };
-        break;
-      }
-    }
-  }
+  const { effectiveGroup } = resolveEffectiveGroup(group);
 
   const virtualChatJid = `${chatJid}#agent:${agentId}`;
   const virtualJid = virtualChatJid; // used as queue key
@@ -1870,28 +1924,9 @@ async function processAgentConversation(chatJid: string, agentId: string): Promi
         }, agentId);
 
         // Send reply to linked IM channels (Feishu/Telegram groups with target_agent_id)
-        // Use in-memory cache instead of DB query — this callback fires per output message
-        const linkedImJids = Object.entries(registeredGroups)
-          .filter(([, g]) => g.target_agent_id === agentId)
-          .map(([jid]) => jid);
-        for (const imJid of linkedImJids) {
-          const channelType = getChannelType(imJid);
-          if (channelType) {
-            imManager.sendMessage(imJid, text).then(() => {
-              imSendFailCounts.delete(imJid);
-            }).catch((err) => {
-              logger.warn({ imJid, agentId, err }, 'Failed to send agent reply to linked IM channel');
-              const count = (imSendFailCounts.get(imJid) ?? 0) + 1;
-              imSendFailCounts.set(imJid, count);
-              if (count >= IM_SEND_FAIL_THRESHOLD) {
-                try {
-                  unbindImGroup(imJid, 'Auto-unbound IM group after consecutive send failures');
-                } catch (unbindErr) {
-                  logger.error({ imJid, agentId, unbindErr }, 'Failed to auto-unbind IM group');
-                }
-              }
-            });
-          }
+        for (const [imJid, g] of Object.entries(registeredGroups)) {
+          if (g.target_agent_id !== agentId) continue;
+          if (getChannelType(imJid)) sendImWithFailTracking(imJid, text);
         }
 
         commitCursor();
@@ -2234,9 +2269,8 @@ function buildOnNewChat(userId: string, homeFolder: string): (chatJid: string, c
       // Already owned by this user — nothing to do
       if (existing.created_by === userId) return;
 
-      // Don't override groups that have target_agent_id configured
-      // (manually bound IM groups routing to conversation agents)
-      if (existing.target_agent_id) return;
+      // Don't override groups with explicit IM routing configured.
+      if (existing.target_agent_id || existing.target_main_jid) return;
 
       // Different user's connection now owns this IM app.
       // Re-route the chat to the current user's home folder.
@@ -2269,7 +2303,7 @@ function buildOnNewChat(userId: string, homeFolder: string): (chatJid: string, c
 /**
  * Build the onBotRemovedFromGroup callback.
  * When bot is removed from a Feishu group or the group is disbanded,
- * clear the target_agent_id binding (if any).
+ * clear any IM binding (agent or main conversation).
  */
 function buildOnBotRemovedFromGroup(): (chatJid: string) => void {
   return (chatJid: string) => {
@@ -2297,16 +2331,32 @@ function buildOnPairAttempt(userId: string): (jid: string, chatName: string, cod
 }
 
 /**
- * Build callback that resolves an IM chatJid to a conversation agent virtual JID.
- * Returns null if the chatJid has no target_agent_id configured.
+ * Build callback that resolves an IM chatJid to a bound target JID.
+ * Supports both conversation agent binding (target_agent_id) and
+ * workspace main conversation binding (target_main_jid).
+ * Returns null if the chatJid has no binding configured.
  */
-function buildResolveEffectiveChatJid(): (chatJid: string) => { effectiveJid: string; agentId: string } | null {
+function buildResolveEffectiveChatJid(): (chatJid: string) => { effectiveJid: string; agentId: string | null } | null {
   return (chatJid: string) => {
     const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
-    if (!group?.target_agent_id) return null;
-    // Construct the virtual JID: web:{folder}#agent:{agentId}
-    const effectiveJid = `web:${group.folder}#agent:${group.target_agent_id}`;
-    return { effectiveJid, agentId: group.target_agent_id };
+    if (!group) return null;
+
+    // Agent binding takes priority
+    if (group.target_agent_id) {
+      const agent = getAgent(group.target_agent_id);
+      if (!agent) return null;
+      const agentParent = registeredGroups[agent.chat_jid] ?? getRegisteredGroup(agent.chat_jid);
+      const folder = agentParent?.folder || group.folder;
+      const effectiveJid = `web:${folder}#agent:${group.target_agent_id}`;
+      return { effectiveJid, agentId: group.target_agent_id };
+    }
+
+    // Main conversation binding
+    if (group.target_main_jid) {
+      return { effectiveJid: group.target_main_jid, agentId: null };
+    }
+
+    return null;
   };
 }
 
@@ -2317,8 +2367,12 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
   return (baseChatJid: string, agentId: string) => {
     const group = registeredGroups[baseChatJid] ?? getRegisteredGroup(baseChatJid);
     if (!group) return;
-    // The base chatJid for processAgentConversation is the web: JID of the home folder
-    const homeChatJid = `web:${group.folder}`;
+
+    // Look up the agent's parent group to find the correct folder (may be a sub-workspace)
+    const agent = getAgent(agentId);
+    const agentParent = agent ? (registeredGroups[agent.chat_jid] ?? getRegisteredGroup(agent.chat_jid)) : null;
+    const folder = agentParent?.folder || group.folder;
+    const homeChatJid = `web:${folder}`;
     const virtualChatJid = `${homeChatJid}#agent:${agentId}`;
 
     // Fetch pending messages and format them for IPC (same as web.ts agent handler)
@@ -2360,8 +2414,7 @@ async function connectUserIMChannels(
 ): Promise<{ feishu: boolean; telegram: boolean }> {
   const onNewChat = buildOnNewChat(userId, homeFolder);
   const resolveGroupFolder = (chatJid: string): string | undefined => {
-    const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
-    return group?.folder;
+    return resolveEffectiveFolder(chatJid);
   };
   const resolveEffectiveChatJid = buildResolveEffectiveChatJid();
   const onAgentMessage = buildOnAgentMessage();
@@ -2809,18 +2862,8 @@ async function main(): Promise<void> {
     }
     if (!group) return false;
 
-    if (group.is_home) return group.executionMode === 'host';
-
-    const siblingJids = getJidsByFolder(group.folder);
-    for (const jid of siblingJids) {
-      const sibling = registeredGroups[jid] ?? getRegisteredGroup(jid);
-      if (sibling && !registeredGroups[jid]) {
-        registeredGroups[jid] = sibling;
-      }
-      if (sibling?.is_home) return sibling.executionMode === 'host';
-    }
-
-    return group.executionMode === 'host';
+    const { effectiveGroup } = resolveEffectiveGroup(group);
+    return effectiveGroup.executionMode === 'host';
   });
   queue.setSerializationKeyResolver((groupJid: string) => {
     // Agent virtual JIDs: {chatJid}#agent:{agentId} → separate serialization key
@@ -2947,7 +2990,8 @@ async function main(): Promise<void> {
     );
   }
 
-  // Periodic health check for IM bindings — detect disbanded groups and auto-unbind
+  // Run health check once on startup to clean up orphaned bindings, then periodically
+  void checkImBindingsHealth();
   const IM_BINDING_HEALTH_CHECK_INTERVAL = 30 * 60 * 1000; // 30 min
   setInterval(() => {
     void checkImBindingsHealth();
@@ -2957,7 +3001,7 @@ async function main(): Promise<void> {
 async function checkImBindingsHealth(): Promise<void> {
   const boundEntries: Array<{ jid: string; group: RegisteredGroup }> = [];
   for (const [jid, group] of Object.entries(registeredGroups)) {
-    if (group.target_agent_id) {
+    if (group.target_agent_id || group.target_main_jid) {
       boundEntries.push({ jid, group });
     }
   }
@@ -2966,6 +3010,24 @@ async function checkImBindingsHealth(): Promise<void> {
   logger.debug({ count: boundEntries.length }, 'Running IM binding health check');
 
   for (const { jid, group } of boundEntries) {
+    // Check for orphaned target_main_jid — target workspace no longer exists
+    if (group.target_main_jid) {
+      const targetGroup = registeredGroups[group.target_main_jid] ?? getRegisteredGroup(group.target_main_jid);
+      if (!targetGroup) {
+        unbindImGroup(jid, `Orphaned main conversation binding: target ${group.target_main_jid} no longer exists`);
+        continue;
+      }
+    }
+
+    // Check for orphaned target_agent_id — agent no longer exists
+    if (group.target_agent_id) {
+      const agent = getAgent(group.target_agent_id);
+      if (!agent) {
+        unbindImGroup(jid, `Orphaned agent binding: agent ${group.target_agent_id} no longer exists`);
+        continue;
+      }
+    }
+
     try {
       const info = await imManager.getChatInfo(jid);
       if (info === null) {

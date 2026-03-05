@@ -37,8 +37,8 @@ export interface ConnectOptions {
   onCommand?: (chatJid: string, command: string) => Promise<string | null>;
   /** 根据 chatJid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (chatJid: string) => string | undefined;
-  /** 将 IM chatJid 解析为 conversation agent 虚拟 JID */
-  resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string } | null;
+  /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
+  resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string | null } | null;
   /** 当 IM 消息被路由到 conversation agent 后调用 */
   onAgentMessage?: (baseChatJid: string, agentId: string) => void;
   /** Bot 被添加到群聊时调用（自动注册群组） */
@@ -665,13 +665,19 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
       content: text,
       timestamp,
       attachments: attachmentsJson,
-    }, targetAgentId);
+    }, targetAgentId ?? undefined);
 
-    if (agentRouting) {
+    if (agentRouting && agentRouting.agentId) {
       onAgentMessage?.(chatJid, agentRouting.agentId);
       logger.info(
         { chatJid, effectiveJid: targetJid, agentId: targetAgentId, sender: resolvedSenderName, messageId, source },
         'Feishu message routed to conversation agent',
+      );
+    } else if (agentRouting) {
+      // Routed to workspace main conversation (no agentId)
+      logger.info(
+        { chatJid, effectiveJid: targetJid, sender: resolvedSenderName, messageId, source },
+        'Feishu message routed to workspace main conversation',
       );
     } else {
       logger.info(

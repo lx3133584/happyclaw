@@ -48,6 +48,7 @@ export interface RegisteredGroup {
   is_home?: boolean; // 用户主容器标记
   selected_skills?: string[] | null; // null = 全部启用
   target_agent_id?: string; // IM 消息路由到指定 conversation agent
+  target_main_jid?: string; // IM 消息路由到指定工作区的主对话（web:{folder}）
 }
 
 export interface GroupMember {

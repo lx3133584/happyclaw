@@ -34,6 +34,9 @@ export interface AvailableImGroup {
   jid: string;
   name: string;
   bound_agent_id: string | null;
+  bound_main_jid: string | null;
+  bound_target_name: string | null;
+  bound_workspace_name: string | null;
   avatar?: string;
   member_count?: number;
   channel_type: string;

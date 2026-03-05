@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Loader2, Link2, Unlink, MessageSquare, Users } from 'lucide-react';
+import { Loader2, Link2, Unlink, MessageSquare, Users, ArrowRightLeft } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -8,13 +8,15 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { SearchInput } from '@/components/common/SearchInput';
+import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useChatStore } from '../../stores/chat';
 import type { AgentInfo, AvailableImGroup } from '../../types';
 
 interface ImBindingDialogProps {
   open: boolean;
   groupJid: string;
-  agentId: string;
+  /** agentId for conversation agent binding; null for main conversation binding */
+  agentId: string | null;
   agent?: AgentInfo;
   onClose: () => void;
 }
@@ -29,20 +31,34 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [rebindTarget, setRebindTarget] = useState<{ imJid: string; group: AvailableImGroup } | null>(null);
 
   const loadAvailableImGroups = useChatStore((s) => s.loadAvailableImGroups);
   const bindImGroup = useChatStore((s) => s.bindImGroup);
   const unbindImGroup = useChatStore((s) => s.unbindImGroup);
+  const bindMainImGroup = useChatStore((s) => s.bindMainImGroup);
+  const unbindMainImGroup = useChatStore((s) => s.unbindMainImGroup);
+
+  const isMainMode = agentId === null;
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setLoading(false);
+      setActionLoading(null);
+      setFilter('');
+      setRebindTarget(null);
+      return;
+    }
+
+    setActionLoading(null);
+    setRebindTarget(null);
     setLoading(true);
     setFilter('');
     loadAvailableImGroups(groupJid).then((groups) => {
       setImGroups(groups);
       setLoading(false);
     });
-  }, [open, groupJid, loadAvailableImGroups]);
+  }, [open, groupJid, agentId, loadAvailableImGroups]);
 
   const filteredGroups = useMemo(() => {
     if (!filter.trim()) return imGroups;
@@ -52,12 +68,35 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
     );
   }, [imGroups, filter]);
 
+  const isBoundToThis = (group: AvailableImGroup): boolean => {
+    if (isMainMode) {
+      return group.bound_main_jid === groupJid;
+    }
+    return group.bound_agent_id === agentId;
+  };
+
+  const isBoundToOther = (group: AvailableImGroup): boolean => {
+    if (isBoundToThis(group)) return false;
+    return !!group.bound_agent_id || !!group.bound_main_jid;
+  };
+
   const handleBind = async (imJid: string) => {
     setActionLoading(imJid);
-    const ok = await bindImGroup(groupJid, agentId, imJid);
+    let ok: boolean;
+    if (isMainMode) {
+      ok = await bindMainImGroup(groupJid, imJid);
+    } else {
+      ok = await bindImGroup(groupJid, agentId, imJid);
+    }
     if (ok) {
       setImGroups((prev) =>
-        prev.map((g) => (g.jid === imJid ? { ...g, bound_agent_id: agentId } : g)),
+        prev.map((g) =>
+          g.jid === imJid
+            ? isMainMode
+              ? { ...g, bound_main_jid: groupJid }
+              : { ...g, bound_agent_id: agentId }
+            : g,
+        ),
       );
     }
     setActionLoading(null);
@@ -65,22 +104,74 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
 
   const handleUnbind = async (imJid: string) => {
     setActionLoading(imJid);
-    const ok = await unbindImGroup(groupJid, agentId, imJid);
+    let ok: boolean;
+    if (isMainMode) {
+      ok = await unbindMainImGroup(groupJid, imJid);
+    } else {
+      ok = await unbindImGroup(groupJid, agentId!, imJid);
+    }
     if (ok) {
       setImGroups((prev) =>
-        prev.map((g) => (g.jid === imJid ? { ...g, bound_agent_id: null } : g)),
+        prev.map((g) =>
+          g.jid === imJid
+            ? isMainMode
+              ? { ...g, bound_main_jid: null }
+              : { ...g, bound_agent_id: null }
+            : g,
+        ),
       );
     }
     setActionLoading(null);
   };
 
-  return (
+  const describeBindTarget = (group: AvailableImGroup): string => {
+    if (group.bound_agent_id && group.bound_target_name) {
+      return group.bound_workspace_name && group.bound_workspace_name !== group.bound_target_name
+        ? `Agent「${group.bound_workspace_name} / ${group.bound_target_name}」`
+        : `Agent「${group.bound_target_name}」`;
+    }
+    if (group.bound_main_jid && group.bound_target_name) {
+      return `工作区「${group.bound_target_name}」`;
+    }
+    return '其他对话';
+  };
+
+  const confirmRebind = async () => {
+    if (!rebindTarget) return;
+    const { imJid } = rebindTarget;
+    setRebindTarget(null);
+    setActionLoading(imJid);
+    let ok: boolean;
+    if (isMainMode) {
+      ok = await bindMainImGroup(groupJid, imJid, true);
+    } else {
+      ok = await bindImGroup(groupJid, agentId!, imJid, true);
+    }
+    if (ok) {
+      setImGroups((prev) =>
+        prev.map((g) =>
+          g.jid === imJid
+            ? isMainMode
+              ? { ...g, bound_main_jid: groupJid, bound_agent_id: null, bound_target_name: null, bound_workspace_name: null }
+              : { ...g, bound_agent_id: agentId, bound_main_jid: null, bound_target_name: null, bound_workspace_name: null }
+            : g,
+        ),
+      );
+    }
+    setActionLoading(null);
+  };
+
+  const title = isMainMode
+    ? '绑定 IM 群组 — 主对话'
+    : `绑定 IM 群组${agent ? ` — ${agent.name}` : ''}`;
+
+  return (<>
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <MessageSquare className="w-4 h-4" />
-            绑定 IM 群组{agent ? ` — ${agent.name}` : ''}
+            {title}
           </DialogTitle>
         </DialogHeader>
 
@@ -118,18 +209,18 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
 
           {!loading &&
             filteredGroups.map((group) => {
-              const isBoundToThis = group.bound_agent_id === agentId;
-              const isBoundToOther = !!group.bound_agent_id && !isBoundToThis;
+              const boundToThis = isBoundToThis(group);
+              const boundToOther = isBoundToOther(group);
               const isActioning = actionLoading === group.jid;
 
               return (
                 <div
                   key={group.jid}
                   className={`flex items-center gap-3 p-3 rounded-lg border ${
-                    isBoundToThis
+                    boundToThis
                       ? 'border-teal-500/30 bg-teal-50/50 dark:bg-teal-950/20'
-                      : isBoundToOther
-                        ? 'border-border opacity-50'
+                      : boundToOther
+                        ? 'border-amber-200/50 dark:border-amber-800/30'
                         : 'border-border hover:border-border/80'
                   }`}
                 >
@@ -157,12 +248,21 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
                           {group.member_count}
                         </span>
                       )}
-                      {isBoundToOther && <span className="text-amber-500">已绑定到其他对话</span>}
+                      {boundToOther && (
+                        <span className="text-amber-500 truncate">
+                          已绑定{group.bound_agent_id ? ' Agent' : ''}
+                          {group.bound_target_name && `「${
+                            group.bound_workspace_name && group.bound_workspace_name !== group.bound_target_name
+                              ? `${group.bound_workspace_name} / ${group.bound_target_name}`
+                              : group.bound_target_name
+                          }」`}
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  {/* Action button */}
-                  {isBoundToThis ? (
+                  {/* Action button — three states: unbind / rebind / bind */}
+                  {boundToThis ? (
                     <Button
                       size="sm"
                       variant="outline"
@@ -177,11 +277,26 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
                       )}
                       解绑
                     </Button>
+                  ) : boundToOther ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setRebindTarget({ imJid: group.jid, group })}
+                      disabled={isActioning}
+                      className="flex-shrink-0 text-amber-600 border-amber-300 hover:bg-amber-50 dark:text-amber-400 dark:border-amber-700 dark:hover:bg-amber-950/30"
+                    >
+                      {isActioning ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <ArrowRightLeft className="w-3 h-3 mr-1" />
+                      )}
+                      换绑
+                    </Button>
                   ) : (
                     <Button
                       size="sm"
                       onClick={() => handleBind(group.jid)}
-                      disabled={isActioning || isBoundToOther}
+                      disabled={isActioning}
                       className="flex-shrink-0"
                     >
                       {isActioning ? (
@@ -198,5 +313,15 @@ export function ImBindingDialog({ open, groupJid, agentId, agent, onClose }: ImB
         </div>
       </DialogContent>
     </Dialog>
+
+    <ConfirmDialog
+      open={!!rebindTarget}
+      onClose={() => setRebindTarget(null)}
+      onConfirm={confirmRebind}
+      title="确认换绑"
+      message={rebindTarget ? `该群组当前已绑定到${describeBindTarget(rebindTarget.group)}，确认换绑到当前${isMainMode ? '主对话' : 'Agent'}吗？` : ''}
+      confirmText="换绑"
+    />
+  </>
   );
 }

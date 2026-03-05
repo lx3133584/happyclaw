@@ -45,6 +45,7 @@ import {
   listUsers,
   listAgentsByJid,
   getGroupsByTargetAgent,
+  getGroupsByTargetMainJid,
 } from '../db.js';
 import { logger } from '../logger.js';
 import {
@@ -679,7 +680,7 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
     );
   }
 
-  // Block deletion if any conversation agent has active IM bindings
+  // Block deletion if any IM binding exists (agent or main conversation)
   const agents = listAgentsByJid(jid);
   const boundAgents: Array<{ agentId: string; agentName: string; imGroups: Array<{ jid: string; name: string }> }> = [];
   for (const a of agents) {
@@ -694,10 +695,13 @@ groupRoutes.delete('/:jid', authMiddleware, async (c) => {
       }
     }
   }
-  if (boundAgents.length > 0) {
+  const mainBound = getGroupsByTargetMainJid(`web:${existing.folder}`);
+  if (boundAgents.length > 0 || mainBound.length > 0) {
+    const mainImGroups = mainBound.map(l => ({ jid: l.jid, name: l.group.name }));
     return c.json({
-      error: '该工作区下有子对话绑定了 IM 群组，请先解绑后再删除。',
+      error: '该工作区绑定了 IM 群组，请先解绑后再删除。',
       bound_agents: boundAgents,
+      bound_main_im_groups: mainImGroups,
     }, 409);
   }
 

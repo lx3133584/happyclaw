@@ -29,8 +29,8 @@ export interface IMChannelConnectOpts {
   onCommand?: (chatJid: string, command: string) => Promise<string | null>;
   /** 根据 jid 解析群组 folder，用于下载文件/图片到工作区 */
   resolveGroupFolder?: (jid: string) => string | undefined;
-  /** 将 IM chatJid 解析为 conversation agent 虚拟 JID（如果该群组绑定了 target_agent_id） */
-  resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string } | null;
+  /** 将 IM chatJid 解析为绑定目标 JID（conversation agent 或工作区主对话） */
+  resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string | null } | null;
   /** 当 IM 消息被路由到 conversation agent 后调用，触发 agent 处理 */
   onAgentMessage?: (baseChatJid: string, agentId: string) => void;
   /** Bot 被添加到群聊时调用 */

@@ -8,6 +8,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { canAccessGroup } from '../web-context.js';
 import {
   getRegisteredGroup,
+  getAllRegisteredGroups,
   listAgentsByJid,
   getAgent,
   deleteAgent,
@@ -17,7 +18,6 @@ import {
   deleteMessagesForChatJid,
   deleteSession,
   getGroupsByTargetAgent,
-  getJidsByFolder,
   setRegisteredGroup,
 } from '../db.js';
 import { DATA_DIR } from '../config.js';
@@ -232,19 +232,23 @@ router.get('/:jid/im-groups', authMiddleware, async (c) => {
     return c.json({ error: 'Forbidden' }, 403);
   }
 
-  if (!group.is_home) {
-    return c.json({ error: 'IM binding is only available for home workspaces' }, 400);
-  }
-
-  const siblingJids = getJidsByFolder(group.folder);
-  // Pre-filter: exclude web JIDs and Telegram private chats
-  const imJids = siblingJids.filter((j) => !j.startsWith('web:') && !isTelegramPrivateChat(j));
+  // Find all IM groups this user can access (across all folders).
+  const allGroups = getAllRegisteredGroups();
+  const imJids = Object.keys(allGroups)
+    .filter((j) => {
+      if (j.startsWith('web:')) return false;
+      return canAccessGroup(user, { ...allGroups[j], jid: j });
+    })
+    .filter((j) => !isTelegramPrivateChat(j));
 
   // Build candidate list
   interface ImGroupCandidate {
     jid: string;
     name: string;
     bound_agent_id: string | null;
+    bound_main_jid: string | null;
+    bound_target_name: string | null;
+    bound_workspace_name: string | null;
     avatar?: string;
     member_count?: number;
     channel_type: string;
@@ -253,12 +257,30 @@ router.get('/:jid/im-groups', authMiddleware, async (c) => {
 
   const candidates: ImGroupCandidate[] = [];
   for (const j of imJids) {
-    const g = getRegisteredGroup(j);
-    if (!g) continue;
+    const g = allGroups[j];
+
+    // Resolve bound target name for display
+    let boundTargetName: string | null = null;
+    let boundWorkspaceName: string | null = null;
+    if (g.target_agent_id) {
+      const boundAgent = getAgent(g.target_agent_id);
+      if (boundAgent) {
+        boundTargetName = boundAgent.name;
+        const ownerGroup = getRegisteredGroup(boundAgent.chat_jid);
+        if (ownerGroup) boundWorkspaceName = ownerGroup.name;
+      }
+    } else if (g.target_main_jid) {
+      const boundGroup = getRegisteredGroup(g.target_main_jid);
+      if (boundGroup) boundTargetName = boundGroup.name;
+    }
+
     candidates.push({
       jid: j,
       name: g.name,
       bound_agent_id: g.target_agent_id ?? null,
+      bound_main_jid: g.target_main_jid ?? null,
+      bound_target_name: boundTargetName,
+      bound_workspace_name: boundWorkspaceName,
       channel_type: getChannelType(j) ?? 'unknown',
     });
   }
@@ -317,10 +339,6 @@ router.put('/:jid/agents/:agentId/im-binding', authMiddleware, async (c) => {
     return c.json({ error: 'Forbidden' }, 403);
   }
 
-  if (!group.is_home) {
-    return c.json({ error: 'IM binding is only available for home workspaces' }, 400);
-  }
-
   const agent = getAgent(agentId);
   if (!agent || agent.chat_jid !== jid) {
     return c.json({ error: 'Agent not found' }, 404);
@@ -339,23 +357,24 @@ router.put('/:jid/agents/:agentId/im-binding', authMiddleware, async (c) => {
   if (!imGroup) {
     return c.json({ error: 'IM group not found' }, 404);
   }
-  if (imGroup.folder !== group.folder) {
-    return c.json({ error: 'IM group must be in the same folder' }, 400);
+  if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+    return c.json({ error: 'Forbidden' }, 403);
   }
-  if (imGroup.target_agent_id && imGroup.target_agent_id !== agentId) {
-    return c.json({ error: 'IM group is already bound to another agent' }, 409);
+  const force = body.force === true;
+  const hasConflict =
+    (imGroup.target_agent_id && imGroup.target_agent_id !== agentId) ||
+    !!imGroup.target_main_jid;
+  if (hasConflict && !force) {
+    return c.json({ error: 'IM group is already bound elsewhere' }, 409);
   }
 
-  // Update DB
-  setRegisteredGroup(imJid, { ...imGroup, target_agent_id: agentId });
-
-  // Update in-memory cache
+  // Update DB + in-memory cache — clear target_main_jid to avoid conflicts
+  const updated = { ...imGroup, target_agent_id: agentId, target_main_jid: undefined };
+  setRegisteredGroup(imJid, updated);
   const deps = getWebDeps();
   if (deps) {
     const groups = deps.getRegisteredGroups();
-    if (groups[imJid]) {
-      groups[imJid].target_agent_id = agentId;
-    }
+    if (groups[imJid]) groups[imJid] = updated;
   }
 
   logger.info({ imJid, agentId, userId: user.id }, 'IM group bound to agent');
@@ -377,10 +396,6 @@ router.delete('/:jid/agents/:agentId/im-binding/:imJid', authMiddleware, async (
     return c.json({ error: 'Forbidden' }, 403);
   }
 
-  if (!group.is_home) {
-    return c.json({ error: 'IM binding is only available for home workspaces' }, 400);
-  }
-
   const agent = getAgent(agentId);
   if (!agent || agent.chat_jid !== jid) {
     return c.json({ error: 'Agent not found' }, 404);
@@ -390,23 +405,113 @@ router.delete('/:jid/agents/:agentId/im-binding/:imJid', authMiddleware, async (
   if (!imGroup) {
     return c.json({ error: 'IM group not found' }, 404);
   }
+  if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
   if (imGroup.target_agent_id !== agentId) {
     return c.json({ error: 'IM group is not bound to this agent' }, 400);
   }
 
-  // Update DB
-  setRegisteredGroup(imJid, { ...imGroup, target_agent_id: undefined });
-
-  // Update in-memory cache
+  // Update DB + in-memory cache
+  const updated = { ...imGroup, target_agent_id: undefined };
+  setRegisteredGroup(imJid, updated);
   const deps = getWebDeps();
   if (deps) {
     const groups = deps.getRegisteredGroups();
-    if (groups[imJid]) {
-      groups[imJid].target_agent_id = undefined;
-    }
+    if (groups[imJid]) groups[imJid] = updated;
   }
 
   logger.info({ imJid, agentId, userId: user.id }, 'IM group unbound from agent');
+  return c.json({ success: true });
+});
+
+// PUT /api/groups/:jid/im-binding — bind an IM group to this workspace's main conversation
+router.put('/:jid/im-binding', authMiddleware, async (c) => {
+  const jid = decodeURIComponent(c.req.param('jid'));
+  const user = c.get('user');
+
+  const group = getRegisteredGroup(jid);
+  if (!group) {
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  if (!canAccessGroup(user, { ...group, jid })) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+  if (group.is_home) {
+    return c.json({ error: 'Home workspace main conversation uses default IM routing' }, 400);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const imJid = typeof body.im_jid === 'string' ? body.im_jid.trim() : '';
+  if (!imJid) {
+    return c.json({ error: 'im_jid is required' }, 400);
+  }
+
+  const imGroup = getRegisteredGroup(imJid);
+  if (!imGroup) {
+    return c.json({ error: 'IM group not found' }, 404);
+  }
+  if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+  const targetMainJid = `web:${group.folder}`;
+  const force = body.force === true;
+  const hasConflict =
+    !!imGroup.target_agent_id ||
+    (imGroup.target_main_jid && imGroup.target_main_jid !== targetMainJid);
+  if (hasConflict && !force) {
+    return c.json({ error: 'IM group is already bound elsewhere' }, 409);
+  }
+
+  // Update DB + in-memory cache — clear target_agent_id to avoid conflicts
+  const updated = { ...imGroup, target_main_jid: targetMainJid, target_agent_id: undefined };
+  setRegisteredGroup(imJid, updated);
+  const deps = getWebDeps();
+  if (deps) {
+    const groups = deps.getRegisteredGroups();
+    if (groups[imJid]) groups[imJid] = updated;
+  }
+
+  logger.info({ imJid, targetMainJid, userId: user.id }, 'IM group bound to workspace main conversation');
+  return c.json({ success: true });
+});
+
+// DELETE /api/groups/:jid/im-binding/:imJid — unbind an IM group from this workspace's main conversation
+router.delete('/:jid/im-binding/:imJid', authMiddleware, async (c) => {
+  const jid = decodeURIComponent(c.req.param('jid'));
+  const imJid = decodeURIComponent(c.req.param('imJid'));
+  const user = c.get('user');
+
+  const group = getRegisteredGroup(jid);
+  if (!group) {
+    return c.json({ error: 'Group not found' }, 404);
+  }
+  if (!canAccessGroup(user, { ...group, jid })) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+
+  const imGroup = getRegisteredGroup(imJid);
+  if (!imGroup) {
+    return c.json({ error: 'IM group not found' }, 404);
+  }
+  if (!canAccessGroup(user, { ...imGroup, jid: imJid })) {
+    return c.json({ error: 'Forbidden' }, 403);
+  }
+  const targetMainJid = `web:${group.folder}`;
+  if (imGroup.target_main_jid !== targetMainJid) {
+    return c.json({ error: 'IM group is not bound to this workspace' }, 400);
+  }
+
+  // Update DB + in-memory cache
+  const updated = { ...imGroup, target_main_jid: undefined };
+  setRegisteredGroup(imJid, updated);
+  const deps = getWebDeps();
+  if (deps) {
+    const groups = deps.getRegisteredGroups();
+    if (groups[imJid]) groups[imJid] = updated;
+  }
+
+  logger.info({ imJid, targetMainJid, userId: user.id }, 'IM group unbound from workspace main conversation');
   return c.json({ success: true });
 });
 

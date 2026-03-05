@@ -22,6 +22,9 @@ import { GroupMembersPanel } from './GroupMembersPanel';
 import { AgentTabBar } from './AgentTabBar';
 import { ImBindingDialog } from './ImBindingDialog';
 
+/** Sentinel value for binding the main conversation (vs. a specific agent) */
+const MAIN_BINDING = '__main__' as const;
+
 /** Inline elapsed-time counter for running tasks */
 function ElapsedTimer({ startTime }: { startTime: number }) {
   const [elapsed, setElapsed] = useState(0);
@@ -67,6 +70,7 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
   const [terminalHeight, setTerminalHeight] = useState(TERMINAL_DEFAULT_HEIGHT);
   const [mobileTerminal, setMobileTerminal] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  // null = dialog closed; MAIN_BINDING = main conversation; other = agent id
   const [bindingAgentId, setBindingAgentId] = useState<string | null>(null);
   const [imStatus, setImStatus] = useState<{ feishu: boolean; telegram: boolean } | null>(null);
   const [imBannerDismissed, setImBannerDismissed] = useState(() =>
@@ -497,7 +501,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
             });
           }
         }}
-        onBindIm={isHome ? setBindingAgentId : undefined}
+        onBindIm={setBindingAgentId}
+        onBindMainIm={!isHome ? () => setBindingAgentId(MAIN_BINDING) : undefined}
       />
 
       {/* Main Content: Messages + Sidebar */}
@@ -926,8 +931,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         <ImBindingDialog
           open={!!bindingAgentId}
           groupJid={groupJid}
-          agentId={bindingAgentId}
-          agent={agents.find((a) => a.id === bindingAgentId)}
+          agentId={bindingAgentId === MAIN_BINDING ? null : bindingAgentId}
+          agent={bindingAgentId !== MAIN_BINDING ? agents.find((a) => a.id === bindingAgentId) : undefined}
           onClose={() => setBindingAgentId(null)}
         />
       )}

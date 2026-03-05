@@ -8,6 +8,8 @@ interface AgentTabBarProps {
   onDeleteAgent: (agentId: string) => void;
   onCreateConversation?: () => void;
   onBindIm?: (agentId: string) => void;
+  /** Show bind button on main conversation tab (non-home workspaces) */
+  onBindMainIm?: () => void;
 }
 
 const TASK_STATUS_ICON: Record<string, string> = {
@@ -23,7 +25,7 @@ const tabClass = (active: boolean) =>
       : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
   }`;
 
-export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onCreateConversation, onBindIm }: AgentTabBarProps) {
+export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onCreateConversation, onBindIm, onBindMainIm }: AgentTabBarProps) {
   const conversations = agents.filter(a => a.kind === 'conversation');
   const tasks = agents.filter(a => a.kind === 'task');
 
@@ -33,9 +35,21 @@ export function AgentTabBar({ agents, activeTab, onSelectTab, onDeleteAgent, onC
   return (
     <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border bg-background/80 overflow-x-auto scrollbar-none">
       {/* Main conversation tab */}
-      <button onClick={() => onSelectTab(null)} className={tabClass(activeTab === null)}>
-        主对话
-      </button>
+      <div
+        className={`${tabClass(activeTab === null)} flex items-center gap-1.5 group`}
+        onClick={() => onSelectTab(null)}
+      >
+        <span>主对话</span>
+        {onBindMainIm && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onBindMainIm(); }}
+            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-all cursor-pointer"
+            title="绑定 IM 群组"
+          >
+            <Link className="w-3 h-3" />
+          </button>
+        )}
+      </div>
 
       {/* Conversation tabs — same visual level as main */}
       {conversations.map((agent) => {

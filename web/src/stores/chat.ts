@@ -161,8 +161,10 @@ interface ChatState {
   refreshAgentMessages: (jid: string, agentId: string) => Promise<void>;
   // IM binding actions
   loadAvailableImGroups: (jid: string) => Promise<AvailableImGroup[]>;
-  bindImGroup: (jid: string, agentId: string, imJid: string) => Promise<boolean>;
+  bindImGroup: (jid: string, agentId: string, imJid: string, force?: boolean) => Promise<boolean>;
   unbindImGroup: (jid: string, agentId: string, imJid: string) => Promise<boolean>;
+  bindMainImGroup: (jid: string, imJid: string, force?: boolean) => Promise<boolean>;
+  unbindMainImGroup: (jid: string, imJid: string) => Promise<boolean>;
 }
 
 const DEFAULT_STREAMING_STATE: StreamingState = {
@@ -1623,11 +1625,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  bindImGroup: async (jid, agentId, imJid) => {
+  bindImGroup: async (jid, agentId, imJid, force) => {
     try {
       await api.put(
         `/api/groups/${encodeURIComponent(jid)}/agents/${agentId}/im-binding`,
-        { im_jid: imJid },
+        { im_jid: imJid, ...(force ? { force: true } : {}) },
       );
       // Refresh agents to get updated linked_im_groups
       get().loadAgents(jid);
@@ -1643,6 +1645,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
         `/api/groups/${encodeURIComponent(jid)}/agents/${agentId}/im-binding/${encodeURIComponent(imJid)}`,
       );
       get().loadAgents(jid);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  bindMainImGroup: async (jid, imJid, force) => {
+    try {
+      await api.put(
+        `/api/groups/${encodeURIComponent(jid)}/im-binding`,
+        { im_jid: imJid, ...(force ? { force: true } : {}) },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  unbindMainImGroup: async (jid, imJid) => {
+    try {
+      await api.delete(
+        `/api/groups/${encodeURIComponent(jid)}/im-binding/${encodeURIComponent(imJid)}`,
+      );
       return true;
     } catch {
       return false;
