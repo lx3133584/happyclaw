@@ -717,8 +717,17 @@ export function createFeishuConnection(config: FeishuConnectionConfig): FeishuCo
 
     // ── 斜杠指令：拦截已知 /xxx 命令，不进入消息流 ──
     // 群聊中 @机器人 后跟斜杠命令，mention 替换后文本为 "@botname /cmd"，
-    // 需要先 strip 掉开头的 @mention 前缀再匹配
-    const textForSlash = text?.trim().replace(/^@\S+\s+/, '') ?? '';
+    // 仅当消息开头是 bot 的 mention 时才 strip，避免误匹配其他用户的 @mention
+    const botMention = botOpenId
+      ? mentions?.find(m => m.id?.open_id === botOpenId)
+      : undefined;
+    const botMentionPrefix = botMention ? `@${botMention.name || ''}` : undefined;
+    const hasBotMentionAtStart = botMentionPrefix
+      ? text?.trimStart().startsWith(botMentionPrefix) ?? false
+      : false;
+    const textForSlash = hasBotMentionAtStart
+      ? (text?.trim().replace(/^@\S+\s+/, '') ?? '')
+      : (text?.trim() ?? '');
     const slashMatch = textForSlash.match(/^\/(\S+)(.*)$/);
     if (slashMatch && onCommand) {
       const cmdBody = (slashMatch[1] + slashMatch[2]).trim();

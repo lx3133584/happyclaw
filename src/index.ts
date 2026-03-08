@@ -494,8 +494,7 @@ function resolveBindingTarget(
   if (!workspace) return null;
 
   if (!agentSpec || agentSpec === 'main' || agentSpec === '主对话') {
-    const mainJid = findWebJidForFolder(workspace.folder);
-    if (!mainJid) return null;
+    const mainJid = findWebJidForFolder(workspace.folder) ?? `web:${workspace.folder}`;
     return {
       target_main_jid: mainJid,
       display: `${workspace.name} / 主对话`,
@@ -710,6 +709,10 @@ function handleNewCommand(chatJid: string, rawName: string): string {
 }
 
 function handleActivationCommand(chatJid: string, rawArgs: string): string {
+  if (chatJid.startsWith('telegram:')) {
+    return 'Telegram 群聊的消息接收由 BotFather 的 Group Privacy 设置控制，/activation 命令仅适用于飞书群聊';
+  }
+
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '未找到当前会话';
 
