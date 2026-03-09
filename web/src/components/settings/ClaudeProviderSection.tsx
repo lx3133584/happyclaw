@@ -17,7 +17,6 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { api } from '../../api/client';
 import type {
   ClaudeConfigPublic,
-  ClaudeCustomEnvResp,
   ClaudeApplyResult,
   ClaudeThirdPartyActivateResult,
   ClaudeThirdPartyProfileItem,
@@ -141,6 +140,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
     setAuthToken('');
     setAuthTokenDirty(false);
     setClearTokenOnSave(false);
+    setCustomEnvRows([]);
     setIsEditorOpen(true);
   }, []);
 
@@ -153,6 +153,8 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
     setAuthToken('');
     setAuthTokenDirty(false);
     setClearTokenOnSave(false);
+    const envRows = Object.entries(profile.customEnv || {}).map(([key, value]) => ({ key, value }));
+    setCustomEnvRows(envRows);
     setIsEditorOpen(true);
   }, []);
 
@@ -167,17 +169,23 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
     setError(null);
 
     try {
-      const [configData, customEnvData, profilesData] = await Promise.all([
+      const [configData, profilesData] = await Promise.all([
         api.get<ClaudeConfigPublic>('/api/config/claude'),
-        api.get<ClaudeCustomEnvResp>('/api/config/claude/custom-env'),
         api.get<ClaudeThirdPartyProfilesResp>('/api/config/claude/third-party/profiles'),
       ]);
 
       setConfig(configData);
       setProfilesState(profilesData);
 
-      const envRows = Object.entries(customEnvData.customEnv || {}).map(([key, value]) => ({ key, value }));
-      setCustomEnvRows(envRows);
+      // Load customEnvRows from the active profile
+      const activeId = profilesData.activeProfileId;
+      const activeProf = profilesData.profiles.find((p) => p.id === activeId) || profilesData.profiles[0];
+      if (activeProf) {
+        const envRows = Object.entries(activeProf.customEnv || {}).map(([key, value]) => ({ key, value }));
+        setCustomEnvRows(envRows);
+      } else {
+        setCustomEnvRows([]);
+      }
 
       const inferredMode: ProviderMode =
         (configData.hasClaudeCodeOauthToken || configData.hasClaudeOAuthCredentials) &&
@@ -430,6 +438,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
           anthropicBaseUrl: trimmedBaseUrl,
           anthropicAuthToken: trimmedToken,
           happyclawModel: trimmedModel,
+          customEnv: envResult.customEnv,
         });
       } else {
         if (!editingProfileId) {
@@ -443,6 +452,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             name: trimmedName,
             anthropicBaseUrl: trimmedBaseUrl,
             happyclawModel: trimmedModel,
+            customEnv: envResult.customEnv,
           },
         );
 
@@ -456,10 +466,6 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
           );
         }
       }
-
-      await api.put<ClaudeCustomEnvResp>('/api/config/claude/custom-env', {
-        customEnv: envResult.customEnv,
-      });
 
       setNotice(editorMode === 'create' ? '第三方配置已创建。' : '第三方配置已保存。');
       setIsEditorOpen(false);
@@ -688,7 +694,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
           )}
 
           {/* Local Claude Code detection */}
-          {localCC?.hasCredentials && !config?.hasClaudeOAuthCredentials && (
+          {localCC?.hasCredentials && (
             <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <HardDrive className="w-4 h-4 text-blue-600" />
@@ -697,11 +703,11 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                 </div>
               </div>
               <div className="text-xs text-slate-600">
-                本机 <code className="bg-white/60 px-1 rounded">~/.claude/.credentials.json</code> 中存在有效凭据（{localCC.accessTokenMasked}），可一键导入。
+                本机 <code className="bg-white/60 px-1 rounded">~/.claude/.credentials.json</code> 中存在有效凭据（{localCC.accessTokenMasked}），可一键导入{config?.hasClaudeOAuthCredentials ? '以更新当前凭据' : ''}。
               </div>
               <Button onClick={handleImportLocalCC} disabled={loading || localCCImporting}>
                 {localCCImporting ? <Loader2 className="size-4 animate-spin" /> : <HardDrive className="size-4" />}
-                导入本机凭据
+                {config?.hasClaudeOAuthCredentials ? '重新导入本机凭据' : '导入本机凭据'}
               </Button>
             </div>
           )}
@@ -1032,7 +1038,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                   </button>
                 </div>
                 <p className="mb-2 text-xs text-slate-500">
-                  这些变量属于全局设置，不会随第三方配置切换而变化。
+                  这些变量仅在当前配置生效，不同配置互不影响。
                 </p>
 
                 {customEnvRows.length === 0 ? (

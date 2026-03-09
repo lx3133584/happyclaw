@@ -208,9 +208,8 @@ export function SetupProvidersPage() {
 
       if (providerMode === 'official') {
         if (oauthDone || localCCImported) {
-          // OAuth or local import already saved the credentials — just clear base URL and custom env
+          // OAuth or local import already saved the credentials — just clear base URL
           await api.put('/api/config/claude', { anthropicBaseUrl: '' });
-          await api.put('/api/config/claude/custom-env', { customEnv: {} });
         } else {
           await api.put('/api/config/claude', { anthropicBaseUrl: '' });
 
@@ -249,7 +248,6 @@ export function SetupProvidersPage() {
               clearAnthropicApiKey: true,
             });
           }
-          await api.put('/api/config/claude/custom-env', { customEnv: {} });
         }
       } else {
         await api.post<ClaudeThirdPartyProfileItem>(
@@ -259,10 +257,9 @@ export function SetupProvidersPage() {
             anthropicBaseUrl: baseUrl.trim(),
             anthropicAuthToken: authToken.trim(),
             happyclawModel: model.trim(),
+            customEnv,
           },
         );
-
-        await api.put('/api/config/claude/custom-env', { customEnv });
       }
 
       await checkAuth();

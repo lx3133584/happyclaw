@@ -138,6 +138,7 @@ export const ClaudeThirdPartyProfileCreateSchema = z.object({
   anthropicBaseUrl: z.string().max(2000),
   anthropicAuthToken: z.string().max(2000),
   happyclawModel: z.string().max(128).optional(),
+  customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
 });
 
 export const ClaudeThirdPartyProfilePatchSchema = z
@@ -145,12 +146,14 @@ export const ClaudeThirdPartyProfilePatchSchema = z
     name: z.string().min(1).max(64).optional(),
     anthropicBaseUrl: z.string().max(2000).optional(),
     happyclawModel: z.string().max(128).optional(),
+    customEnv: z.record(z.string().max(256), z.string().max(4096)).optional(),
   })
   .refine(
     (data) =>
       typeof data.name === 'string' ||
       typeof data.anthropicBaseUrl === 'string' ||
-      typeof data.happyclawModel === 'string',
+      typeof data.happyclawModel === 'string' ||
+      data.customEnv !== undefined,
     { message: 'At least one profile field must be provided' },
   );
 

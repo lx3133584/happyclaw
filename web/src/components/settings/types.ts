@@ -21,6 +21,7 @@ export interface ClaudeThirdPartyProfileItem {
   updatedAt: string | null;
   hasAnthropicAuthToken: boolean;
   anthropicAuthTokenMasked: string | null;
+  customEnv: Record<string, string>;
 }
 
 export interface ClaudeThirdPartyProfilesResp {
@@ -66,9 +67,6 @@ export interface TelegramTestResult {
   error?: string;
 }
 
-export interface ClaudeCustomEnvResp {
-  customEnv: Record<string, string>;
-}
 
 export interface ClaudeApplyResult {
   success: boolean;

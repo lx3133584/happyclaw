@@ -33,8 +33,8 @@ import {
   updateClaudeThirdPartyProfileSecret,
   activateClaudeThirdPartyProfile,
   deleteClaudeThirdPartyProfile,
-  getGlobalClaudeCustomEnv,
-  saveGlobalClaudeCustomEnv,
+  getActiveProfileCustomEnv,
+  saveOfficialCustomEnv,
   getFeishuProviderConfig,
   getFeishuProviderConfigWithSource,
   toPublicFeishuProviderConfig,
@@ -147,10 +147,10 @@ configRoutes.get(
   (c) => {
     try {
       const user = c.get('user') as AuthUser;
-      const customEnv = getGlobalClaudeCustomEnv();
       if (!hasPermission(user, 'manage_system_config')) {
         return c.json({ customEnv: {} });
       }
+      const customEnv = getActiveProfileCustomEnv();
       return c.json({ customEnv });
     } catch (err) {
       logger.error({ err }, 'Failed to load Claude custom env');
@@ -228,8 +228,19 @@ configRoutes.put(
     }
 
     try {
-      const saved = saveGlobalClaudeCustomEnv(validation.data.customEnv);
-      return c.json({ customEnv: saved });
+      // Determine active profile and write to it
+      const profiles = listClaudeThirdPartyProfiles();
+      const activeId = profiles.activeProfileId;
+
+      if (activeId === '__official__') {
+        const saved = saveOfficialCustomEnv(validation.data.customEnv);
+        return c.json({ customEnv: saved });
+      }
+
+      const profile = updateClaudeThirdPartyProfile(activeId, {
+        customEnv: validation.data.customEnv,
+      });
+      return c.json({ customEnv: profile.customEnv });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Invalid custom env payload';
@@ -435,7 +446,10 @@ configRoutes.post(
 
     const actor = (c.get('user') as AuthUser).username;
     try {
-      const profile = createClaudeThirdPartyProfile(validation.data);
+      const profile = createClaudeThirdPartyProfile({
+        ...validation.data,
+        customEnv: validation.data.customEnv,
+      });
       appendClaudeConfigAudit(
         actor,
         'create_third_party_profile',
@@ -444,6 +458,7 @@ configRoutes.post(
           'anthropicBaseUrl',
           'anthropicAuthToken:set',
           'happyclawModel',
+          ...(validation.data.customEnv ? ['customEnv'] : []),
         ],
         {
           profileId: profile.id,
@@ -485,6 +500,9 @@ configRoutes.patch(
     }
     if (validation.data.happyclawModel !== undefined) {
       changedFields.push('happyclawModel');
+    }
+    if (validation.data.customEnv !== undefined) {
+      changedFields.push('customEnv');
     }
 
     try {
