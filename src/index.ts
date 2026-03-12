@@ -128,6 +128,7 @@ import {
   RegisteredGroup,
 } from './types.js';
 import { logger } from './logger.js';
+import { stripAgentInternalTags } from './utils.js';
 import { normalizeImageAttachments } from './message-attachments.js';
 import {
   startWebServer,
@@ -1792,10 +1793,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             typeof result.result === 'string'
               ? result.result
               : JSON.stringify(result.result);
-          // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-          const text = raw
-            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
-            .trim();
+          const text = stripAgentInternalTags(raw);
           logger.info(
             { group: group.name },
             `Agent output: ${raw.slice(0, 200)}`,
@@ -2106,7 +2104,7 @@ async function runTerminalWarmup(chatJid: string): Promise<void> {
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
-        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        const text = stripAgentInternalTags(raw);
         if (!text || text === warmupReadyToken) return;
         await sendMessage(chatJid, text);
         resetIdleTimer();
@@ -3242,7 +3240,7 @@ async function processAgentConversation(
         typeof output.result === 'string'
           ? output.result
           : JSON.stringify(output.result);
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      const text = stripAgentInternalTags(raw);
       if (text) {
         const msgId = crypto.randomUUID();
         lastAgentReplyMsgId = msgId;
@@ -3554,11 +3552,25 @@ async function startMessageLoop(): Promise<void> {
           // This prevents IM messages from being piped into an active web:main
           // container (whose onOutput callback wouldn't route replies to IM).
           if (homeFolders.has(group.folder)) {
-            queue.closeStdin(chatJid);
-            logger.debug(
-              { chatJid },
-              'Home-folder message received, forcing stdin close before enqueue',
-            );
+            // Only close the active runner's stdin if it is handling user
+            // messages (not a scheduled task).  Sending the _close sentinel to
+            // a running task container prematurely terminates the task, which
+            // causes its reply to be swallowed or delivered to the wrong IM
+            // context.  When the runner is a task, simply enqueue the message
+            // check; GroupQueue will start it once the task finishes.
+            // See GitHub issue riba2534/happyclaw#151.
+            if (!queue.isActiveRunnerTask(chatJid)) {
+              queue.closeStdin(chatJid);
+              logger.debug(
+                { chatJid },
+                'Home-folder message received, forcing stdin close before enqueue',
+              );
+            } else {
+              logger.debug(
+                { chatJid },
+                'Home-folder message received while scheduled task is running; deferring until task completes',
+              );
+            }
             queue.enqueueMessageCheck(chatJid);
             continue;
           }
