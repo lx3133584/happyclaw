@@ -7,6 +7,7 @@ import path from 'path';
 import os from 'os';
 import type { Variables } from '../web-context.js';
 import { authMiddleware, systemConfigMiddleware } from '../middleware/auth.js';
+import { logger } from '../logger.js';
 
 const agentDefinitionsRoutes = new Hono<{ Variables: Variables }>();
 
@@ -32,6 +33,14 @@ function getAgentsDir(): string {
 
 function validateAgentId(id: string): boolean {
   return /^[\w\-]+$/.test(id);
+}
+
+function extractTools(frontmatter: Record<string, string | string[]>): string[] {
+  return Array.isArray(frontmatter.tools)
+    ? frontmatter.tools
+    : typeof frontmatter.tools === 'string'
+      ? frontmatter.tools.split(',').map((t) => t.trim()).filter(Boolean)
+      : [];
 }
 
 function parseFrontmatter(content: string): Record<string, string | string[]> {
@@ -122,21 +131,15 @@ function discoverAgents(): AgentDefinition[] {
         const stats = fs.statSync(filePath);
         const id = entry.name.replace(/\.md$/, '');
 
-        const tools = Array.isArray(frontmatter.tools)
-          ? frontmatter.tools
-          : typeof frontmatter.tools === 'string'
-            ? frontmatter.tools.split(',').map((t) => t.trim()).filter(Boolean)
-            : [];
-
         agents.push({
           id,
           name: (frontmatter.name as string) || id,
           description: (frontmatter.description as string) || '',
-          tools,
+          tools: extractTools(frontmatter),
           updatedAt: stats.mtime.toISOString(),
         });
-      } catch {
-        // Skip malformed files
+      } catch (err) {
+        logger.warn({ filePath, error: err instanceof Error ? err.message : String(err) }, 'Failed to parse agent file');
       }
     }
   } catch {
@@ -157,17 +160,11 @@ function getAgentDetail(id: string): AgentDefinitionDetail | null {
     const frontmatter = parseFrontmatter(content);
     const stats = fs.statSync(filePath);
 
-    const tools = Array.isArray(frontmatter.tools)
-      ? frontmatter.tools
-      : typeof frontmatter.tools === 'string'
-        ? frontmatter.tools.split(',').map((t) => t.trim()).filter(Boolean)
-        : [];
-
     return {
       id,
       name: (frontmatter.name as string) || id,
       description: (frontmatter.description as string) || '',
-      tools,
+      tools: extractTools(frontmatter),
       updatedAt: stats.mtime.toISOString(),
       content,
     };
@@ -201,18 +198,22 @@ agentDefinitionsRoutes.put('/:id', authMiddleware, systemConfigMiddleware, async
     return c.json({ error: 'Invalid agent ID' }, 400);
   }
 
-  const filePath = path.join(getAgentsDir(), `${id}.md`);
-  if (!fs.existsSync(filePath)) {
-    return c.json({ error: 'Agent definition not found' }, 404);
-  }
-
   const body = await c.req.json().catch(() => ({}));
   const { content } = body as { content: string };
   if (typeof content !== 'string') {
     return c.json({ error: 'content must be a string' }, 400);
   }
 
-  fs.writeFileSync(filePath, content, 'utf-8');
+  const filePath = path.join(getAgentsDir(), `${id}.md`);
+  try {
+    fs.accessSync(filePath);
+    fs.writeFileSync(filePath, content, 'utf-8');
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return c.json({ error: 'Agent definition not found' }, 404);
+    }
+    throw err;
+  }
   return c.json({ success: true });
 });
 
@@ -238,11 +239,14 @@ agentDefinitionsRoutes.post('/', authMiddleware, systemConfigMiddleware, async (
   fs.mkdirSync(agentsDir, { recursive: true });
 
   const filePath = path.join(agentsDir, `${id}.md`);
-  if (fs.existsSync(filePath)) {
-    return c.json({ error: 'Agent with this name already exists' }, 409);
+  try {
+    fs.writeFileSync(filePath, content, { encoding: 'utf-8', flag: 'wx' });
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      return c.json({ error: 'Agent with this name already exists' }, 409);
+    }
+    throw err;
   }
-
-  fs.writeFileSync(filePath, content, 'utf-8');
   return c.json({ success: true, id });
 });
 
@@ -254,11 +258,14 @@ agentDefinitionsRoutes.delete('/:id', authMiddleware, systemConfigMiddleware, (c
   }
 
   const filePath = path.join(getAgentsDir(), `${id}.md`);
-  if (!fs.existsSync(filePath)) {
-    return c.json({ error: 'Agent definition not found' }, 404);
+  try {
+    fs.unlinkSync(filePath);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return c.json({ error: 'Agent definition not found' }, 404);
+    }
+    throw err;
   }
-
-  fs.unlinkSync(filePath);
   return c.json({ success: true });
 });
 

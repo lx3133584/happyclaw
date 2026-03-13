@@ -40,6 +40,7 @@ export function AgentDefinitionsPage() {
   const [showContent, setShowContent] = useState(false);
 
   const dirty = useMemo(() => content !== initialContent, [content, initialContent]);
+  const byteCount = useMemo(() => new TextEncoder().encode(content).length, [content]);
 
   const filtered = useMemo(() => {
     const q = searchQuery.toLowerCase();
@@ -91,10 +92,9 @@ export function AgentDefinitionsPage() {
     setDetailError(null);
     try {
       await updateAgent(detail.id, content);
-      const updated = await getAgentDetail(detail.id);
-      setDetail(updated);
-      setContent(updated.content);
-      setInitialContent(updated.content);
+      // updateAgent already calls loadAgents() internally to sync the list.
+      // Just update local state with the saved content — no extra fetch needed.
+      setInitialContent(content);
       setNotice('已保存');
     } catch (err) {
       setDetailError(err instanceof Error ? err.message : '保存失败');
@@ -276,7 +276,7 @@ tools:
                   <div className="mb-3">
                     <div className="text-sm font-semibold text-foreground break-all">{detail.name}</div>
                     <div className="text-xs text-slate-500 mt-1">
-                      最近更新时间: {updatedText} · 字节数: {new TextEncoder().encode(content).length}
+                      最近更新时间: {updatedText} · 字节数: {byteCount}
                     </div>
                   </div>
 

@@ -336,6 +336,7 @@ async function handleWebUserMessage(
   let pipedToActive = false;
   const images = toAgentImages(normalizedAttachments);
   const intent = analyzeIntent(content);
+  const updateRoute = deps.updateReplyRoute;
   const sendResult = deps.queue.sendMessage(
     chatJid,
     formatted,
@@ -344,7 +345,7 @@ async function handleWebUserMessage(
     () => {
       // IPC write succeeded — update reply route for home groups.
       // Web messages have no IM source, so clear the IM route.
-      deps!.updateReplyRoute?.(group.folder, null);
+      updateRoute?.(group.folder, null);
     },
   );
   if (sendResult === 'sent') {
