@@ -238,6 +238,59 @@ export function StreamingDisplay({ groupJid, isWaiting, senderName: senderNamePr
   const userScrolledRef = useRef(false);
   const [localElapsed, setLocalElapsed] = useState<Record<string, number>>({});
 
+  // Auto-clear stale waiting state to prevent UI getting stuck when agent
+  // process dies without sending a final message.
+  const lastStreamActivityRef = useRef(Date.now());
+  useEffect(() => {
+    // Reset activity timer whenever streaming state changes (i.e., new stream events)
+    if (streaming) {
+      lastStreamActivityRef.current = Date.now();
+    }
+  }, [streaming]);
+
+  useEffect(() => {
+    if (!isWaiting) return;
+    // Record the moment waiting starts
+    lastStreamActivityRef.current = Date.now();
+
+    const STALE_NO_DATA_MS = 60_000;   // 60s with no stream data at all
+    const STALE_WITH_DATA_MS = 180_000; // 3min since last stream event
+
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - lastStreamActivityRef.current;
+      const state = useChatStore.getState();
+      const hasData = agentId
+        ? !!state.agentStreaming[agentId]
+        : !!state.streaming[groupJid];
+      const threshold = hasData ? STALE_WITH_DATA_MS : STALE_NO_DATA_MS;
+
+      if (elapsed > threshold) {
+        // Clear the stuck waiting state
+        if (agentId) {
+          useChatStore.setState(s => {
+            const nextStreaming = { ...s.agentStreaming };
+            delete nextStreaming[agentId];
+            return {
+              agentWaiting: { ...s.agentWaiting, [agentId]: false },
+              agentStreaming: nextStreaming,
+            };
+          });
+        } else {
+          useChatStore.setState(s => {
+            const nextStreaming = { ...s.streaming };
+            delete nextStreaming[groupJid];
+            return {
+              waiting: { ...s.waiting, [groupJid]: false },
+              streaming: nextStreaming,
+            };
+          });
+        }
+      }
+    }, 10_000); // check every 10s
+
+    return () => clearInterval(interval);
+  }, [isWaiting, groupJid, agentId]);
+
   // Auto-scroll thinking content (unless user scrolled up)
   useEffect(() => {
     if (!thinkingExpanded || !thinkingRef.current || userScrolledRef.current) return;
