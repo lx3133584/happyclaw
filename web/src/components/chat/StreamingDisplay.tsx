@@ -175,10 +175,12 @@ function StreamingContent({
       {/* Recent events timeline */}
       {streaming.recentEvents.length > 0 && (
         <div className="rounded-lg border border-border bg-muted/30 p-2 mb-2">
-          <div className="text-[11px] font-medium text-slate-500 mb-1.5">调用轨迹</div>
-          <div className="space-y-1 max-h-40 overflow-y-auto">
+          <div className="text-[11px] font-medium text-muted-foreground mb-1">调用轨迹</div>
+          <div className="space-y-0.5 max-h-28 overflow-y-auto">
             {streaming.recentEvents.map((item) => (
-              <TimelineEventItem key={item.id} item={item} />
+              <div key={item.id} className="text-xs text-foreground/70 break-words">
+                {item.text}
+              </div>
             ))}
           </div>
         </div>

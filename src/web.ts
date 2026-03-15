@@ -567,12 +567,6 @@ function setupWebSocket(server: any): WebSocketServer {
       socket.destroy();
       return;
     }
-    if (session.must_change_password) {
-      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
     request.__happyclawSessionId = token;
 
     wss.handleUpgrade(request, socket, head, (ws) => {
@@ -610,8 +604,7 @@ function setupWebSocket(server: any): WebSocketServer {
         if (
           !session ||
           isSessionExpired(session.expires_at) ||
-          session.status !== 'active' ||
-          session.must_change_password
+          session.status !== 'active'
         ) {
           if (session && isSessionExpired(session.expires_at)) {
             deleteUserSession(sessionId);
@@ -1052,8 +1045,7 @@ function safeBroadcast(
     const invalid =
       !session ||
       expired ||
-      session.status !== 'active' ||
-      session.must_change_password;
+      session.status !== 'active';
     if (invalid) {
       if (expired) {
         deleteUserSession(clientInfo.sessionId);
