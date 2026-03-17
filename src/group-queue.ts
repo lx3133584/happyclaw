@@ -1016,9 +1016,12 @@ export class GroupQueue {
     // Tasks first (they won't be re-discovered from SQLite like messages)
     while (state.pendingTasks.length > 0) {
       const task = state.pendingTasks.shift()!;
-      // Check if scheduled task is still active before occupying a slot
+      // Check if scheduled task is still active before occupying a slot.
+      // Only skip tasks that exist in the DB and are no longer active.
+      // Dynamic tasks (agent conversations, etc.) don't have DB entries
+      // and must always be allowed to run.
       const dbTask = getTaskById(task.id);
-      if (!dbTask || dbTask.status !== 'active') {
+      if (dbTask && dbTask.status !== 'active') {
         logger.info(
           { groupJid, taskId: task.id },
           'Skipping cancelled/deleted task during drain',
@@ -1057,19 +1060,21 @@ export class GroupQueue {
 
       // Prioritize tasks over messages
       if (state.pendingTasks.length > 0) {
-        // Skip cancelled/deleted tasks
+        // Skip cancelled/deleted scheduled tasks (but allow dynamic tasks
+        // like agent conversations that have no DB entry).
         let validTask: QueuedTask | undefined;
         while (state.pendingTasks.length > 0) {
           const candidate = state.pendingTasks.shift()!;
           const dbTask = getTaskById(candidate.id);
-          if (dbTask && dbTask.status === 'active') {
-            validTask = candidate;
-            break;
+          if (dbTask && dbTask.status !== 'active') {
+            logger.info(
+              { groupJid: jid, taskId: candidate.id },
+              'Skipping cancelled/deleted task during drainWaiting',
+            );
+            continue;
           }
-          logger.info(
-            { groupJid: jid, taskId: candidate.id },
-            'Skipping cancelled/deleted task during drainWaiting',
-          );
+          validTask = candidate;
+          break;
         }
         if (validTask) {
           this.runTask(jid, validTask);
