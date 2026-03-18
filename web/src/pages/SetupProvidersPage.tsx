@@ -18,7 +18,7 @@ const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'CLAUDE_CODE_OAUTH_TOKEN',
-  'HAPPYCLAW_MODEL',
+  'ANTHROPIC_MODEL',
 ]);
 
 function buildCustomEnv(rows: EnvRow[]): { customEnv: Record<string, string>; error: string | null } {
@@ -256,7 +256,7 @@ export function SetupProvidersPage() {
             name: '默认第三方',
             anthropicBaseUrl: baseUrl.trim(),
             anthropicAuthToken: authToken.trim(),
-            happyclawModel: model.trim(),
+            anthropicModel: model.trim(),
             customEnv,
           },
         );
@@ -476,7 +476,7 @@ export function SetupProvidersPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">HAPPYCLAW_MODEL（可选）</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">ANTHROPIC_MODEL（可选）</label>
                   <Input
                     type="text"
                     value={model}

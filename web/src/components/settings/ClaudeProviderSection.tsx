@@ -33,7 +33,7 @@ const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'CLAUDE_CODE_OAUTH_TOKEN',
-  'HAPPYCLAW_MODEL',
+  'ANTHROPIC_MODEL',
 ]);
 
 interface ClaudeProviderSectionProps extends SettingsNotification {}
@@ -149,7 +149,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
     setEditingProfileId(profile.id);
     setProfileName(profile.name);
     setBaseUrl(profile.anthropicBaseUrl || '');
-    setModel(profile.happyclawModel || '');
+    setModel(profile.anthropicModel || '');
     setAuthToken('');
     setAuthTokenDirty(false);
     setClearTokenOnSave(false);
@@ -437,7 +437,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
           name: trimmedName,
           anthropicBaseUrl: trimmedBaseUrl,
           anthropicAuthToken: trimmedToken,
-          happyclawModel: trimmedModel,
+          anthropicModel: trimmedModel,
           customEnv: envResult.customEnv,
         });
       } else {
@@ -451,7 +451,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
           {
             name: trimmedName,
             anthropicBaseUrl: trimmedBaseUrl,
-            happyclawModel: trimmedModel,
+            anthropicModel: trimmedModel,
             customEnv: envResult.customEnv,
           },
         );
@@ -818,7 +818,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                             <div>
                               <div className="text-slate-400">Model</div>
                               <div className="text-slate-700 font-mono break-all sm:truncate">
-                                {profile.happyclawModel || '-'}
+                                {profile.anthropicModel || '-'}
                               </div>
                             </div>
                             <div>
@@ -894,7 +894,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
             <Button
               variant="outline"
               size="sm"
-              onClick={() => resetEditorForCreate(config?.happyclawModel || '')}
+              onClick={() => resetEditorForCreate(config?.anthropicModel || '')}
               disabled={loading || saving || applying || activatingProfileId !== null || deletingProfileId !== null}
             >
               <Plus className="size-4" />
@@ -951,7 +951,7 @@ export function ClaudeProviderSection({ setNotice, setError }: ClaudeProviderSec
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">HAPPYCLAW_MODEL</label>
+                  <label className="block text-xs text-slate-600 mb-1">ANTHROPIC_MODEL</label>
                   <Input
                     type="text"
                     value={model}
