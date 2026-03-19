@@ -3106,7 +3106,7 @@ function startIpcWatcher(): void {
                     const persistedImgMsgId = storeMessageDirect(
                       imgMsgId,
                       data.chatJid,
-                      ASSISTANT_NAME,
+                      'happyclaw-agent',
                       ASSISTANT_NAME,
                       displayText,
                       imgTimestamp,
@@ -3933,7 +3933,7 @@ async function processAgentConversation(
             const persistedMsgId = storeMessageDirect(
               msgId,
               virtualChatJid,
-              ASSISTANT_NAME,
+              'happyclaw-agent',
               ASSISTANT_NAME,
               interruptedText,
               timestamp,
@@ -4015,7 +4015,7 @@ async function processAgentConversation(
         const persistedMsgId = storeMessageDirect(
           msgId,
           virtualChatJid,
-          ASSISTANT_NAME,
+          'happyclaw-agent',
           ASSISTANT_NAME,
           text,
           timestamp,
@@ -4236,7 +4236,7 @@ async function processAgentConversation(
         const persistedMsgId = storeMessageDirect(
           msgId,
           virtualChatJid,
-          ASSISTANT_NAME,
+          'happyclaw-agent',
           ASSISTANT_NAME,
           interruptedText,
           timestamp,
@@ -4276,7 +4276,7 @@ async function processAgentConversation(
         const persistedMsgId = storeMessageDirect(
           msgId,
           virtualChatJid,
-          ASSISTANT_NAME,
+          'happyclaw-agent',
           ASSISTANT_NAME,
           partialReply,
           timestamp,
