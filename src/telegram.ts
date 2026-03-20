@@ -13,8 +13,6 @@ import {
   FileTooLargeError,
 } from './im-downloader.js';
 import { detectImageMimeType } from './image-detector.js';
-import { analyzeIntent } from './intent-analyzer.js';
-
 // ─── TelegramConnection Interface ──────────────────────────────
 
 export interface TelegramConnectionConfig {
@@ -48,11 +46,6 @@ export interface TelegramConnectOpts {
   onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
   /** Bot 被移出群聊或群被解散时调用 */
   onBotRemovedFromGroup?: (chatJid: string) => void;
-  /** 中断 fast-path：消息到达时立即检测中断意图，绕过轮询延迟直接触发中断 */
-  onInterruptRequest?: (
-    chatJid: string,
-    intent: 'stop' | 'correction',
-  ) => void;
 }
 
 export interface TelegramConnection {
@@ -524,18 +517,6 @@ export function createTelegramConnection(
           // 解析绑定路由
           const agentRouting = opts.resolveEffectiveChatJid?.(jid);
           const targetJid = agentRouting?.effectiveJid ?? jid;
-
-          // ── 中断 fast-path（使用路由后的 targetJid） ──
-          if (opts.onInterruptRequest && text.length <= 50) {
-            const intent = analyzeIntent(text);
-            if (intent !== 'continue') {
-              opts.onInterruptRequest(targetJid, intent);
-              logger.info(
-                { jid, targetJid, intent },
-                'Interrupt fast-path triggered from Telegram',
-              );
-            }
-          }
 
           // 存储消息
           const id = crypto.randomUUID();

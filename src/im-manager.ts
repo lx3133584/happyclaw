@@ -55,10 +55,7 @@ export interface ConnectFeishuOptions {
   onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
   onBotRemovedFromGroup?: (chatJid: string) => void;
   shouldProcessGroupMessage?: (chatJid: string) => boolean;
-  onInterruptRequest?: (
-    chatJid: string,
-    intent: 'stop' | 'correction',
-  ) => void;
+  onCardInterrupt?: (chatJid: string) => void;
 }
 
 class IMConnectionManager {
@@ -133,15 +130,10 @@ class IMConnectionManager {
 
     const chatId = extractChatId(jid);
     const channel = this.findChannelForJid(jid, channelType);
-    if (channel) {
-      await channel.sendMessage(chatId, text, localImagePaths);
-      return;
+    if (!channel) {
+      throw new Error(`No IM channel available for ${jid} (${channelType})`);
     }
-
-    logger.warn(
-      { jid, channelType },
-      'No IM channel available to send message',
-    );
+    await channel.sendMessage(chatId, text, localImagePaths);
   }
 
   /**
@@ -283,6 +275,16 @@ class IMConnectionManager {
     return types;
   }
 
+  /**
+   * Check if a specific JID has a connected channel available.
+   * Uses the same routing logic as sendMessage (group ownership + sibling fallback).
+   */
+  isChannelAvailableForJid(jid: string): boolean {
+    const channelType = getChannelType(jid);
+    if (!channelType) return false;
+    return !!this.findChannelForJid(jid, channelType);
+  }
+
   // ─── Convenience Methods (API-compatible wrappers) ──────────
 
   /**
@@ -317,7 +319,7 @@ class IMConnectionManager {
       onBotAddedToGroup: options?.onBotAddedToGroup,
       onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
       shouldProcessGroupMessage: options?.shouldProcessGroupMessage,
-      onInterruptRequest: options?.onInterruptRequest,
+      onCardInterrupt: options?.onCardInterrupt,
     });
   }
 
@@ -343,10 +345,6 @@ class IMConnectionManager {
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
       onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
       onBotRemovedFromGroup?: (chatJid: string) => void;
-      onInterruptRequest?: (
-        chatJid: string,
-        intent: 'stop' | 'correction',
-      ) => void;
     },
   ): Promise<boolean> {
     if (!config.botToken) {
@@ -372,7 +370,6 @@ class IMConnectionManager {
       onAgentMessage: options?.onAgentMessage,
       onBotAddedToGroup: options?.onBotAddedToGroup,
       onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
-      onInterruptRequest: options?.onInterruptRequest,
     });
   }
 
@@ -396,10 +393,6 @@ class IMConnectionManager {
         chatJid: string,
       ) => { effectiveJid: string; agentId: string | null } | null;
       onAgentMessage?: (baseChatJid: string, agentId: string) => void;
-      onInterruptRequest?: (
-        chatJid: string,
-        intent: 'stop' | 'correction',
-      ) => void;
     },
   ): Promise<boolean> {
     if (!config.appId || !config.appSecret) {
@@ -423,7 +416,6 @@ class IMConnectionManager {
       resolveGroupFolder: options?.resolveGroupFolder,
       resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
       onAgentMessage: options?.onAgentMessage,
-      onInterruptRequest: options?.onInterruptRequest,
     });
   }
 

@@ -7,14 +7,7 @@ import { killProcessTree } from './container-runner.js';
 import { getTaskById } from './db.js';
 import { getSystemSettings } from './runtime-config.js';
 import { logger } from './logger.js';
-import { type MessageIntent } from './intent-analyzer.js';
-
-export type SendMessageResult =
-  | 'sent'
-  | 'queued'
-  | 'no_active'
-  | 'interrupted_stop'
-  | 'interrupted_correction';
+export type SendMessageResult = 'sent' | 'queued' | 'no_active';
 
 interface QueuedTask {
   id: string;
@@ -415,19 +408,16 @@ export class GroupQueue {
 
   /**
    * Send a follow-up message to the active container via IPC file.
-   * Analyzes message intent and may interrupt the current query.
    *
    * Returns:
-   * - 'sent': message written to IPC (continue intent)
+   * - 'sent': message written to IPC
+   * - 'queued': message queued for next container run
    * - 'no_active': no active container/process for this group
-   * - 'interrupted_stop': stop intent detected, query interrupted, message NOT written
-   * - 'interrupted_correction': correction intent detected, query interrupted, message written
    */
   sendMessage(
     groupJid: string,
     text: string,
     images?: Array<{ data: string; mimeType?: string }>,
-    intent: MessageIntent = 'continue',
     onInjected?: () => void,
   ): SendMessageResult {
     const state = this.resolveActiveState(groupJid);
@@ -453,35 +443,17 @@ export class GroupQueue {
       return 'no_active';
     }
 
-    if (intent === 'stop') {
-      this.interruptQuery(groupJid);
-      logger.info(
-        { groupJid, intent },
-        'Stop intent detected, interrupting query without IPC message',
-      );
-      return 'interrupted_stop';
-    }
-
-    if (intent === 'correction') {
-      this.interruptQuery(groupJid);
-      logger.info(
-        { groupJid, intent },
-        'Correction intent detected, interrupting query and writing IPC message',
-      );
-      // Fall through to write the IPC message so the agent sees the correction after restart
-    }
-
-    // For continue intent on main agent (not sub-agent), queue the message
-    // instead of IPC-injecting into the running query. This aligns with
-    // Claude Code's one-question-one-answer model: the current query finishes
-    // first, then drainGroup starts a new container to process queued messages.
-    if (intent === 'continue' && state.agentId === null && state.queryInFlight) {
+    // For main agent (not sub-agent), queue the message instead of
+    // IPC-injecting into the running query. This aligns with Claude Code's
+    // one-question-one-answer model: the current query finishes first, then
+    // drainGroup starts a new container to process queued messages.
+    if (state.agentId === null && state.queryInFlight) {
       const own = this.getGroup(groupJid);
       own.pendingMessages = true;
       this.waitingGroups.add(groupJid);
       this.requestDrainForActiveRunner(
         groupJid,
-        'Continue intent queued, drain sentinel written',
+        'Message queued, drain sentinel written',
       );
       return 'queued';
     }
@@ -499,7 +471,7 @@ export class GroupQueue {
       fs.renameSync(tempPath, filepath);
       state.queryInFlight = true;
       onInjected?.();
-      return intent === 'correction' ? 'interrupted_correction' : 'sent';
+      return 'sent';
     } catch {
       return 'no_active';
     }

@@ -54,11 +54,8 @@ export interface IMChannelConnectOpts {
   onBotRemovedFromGroup?: (chatJid: string) => void;
   /** 群聊消息过滤：bot 未被 @mention 时调用，返回 true 则处理，false 则丢弃 */
   shouldProcessGroupMessage?: (chatJid: string) => boolean;
-  /** 中断 fast-path：消息到达时立即检测中断意图，绕过轮询延迟直接触发中断 */
-  onInterruptRequest?: (
-    chatJid: string,
-    intent: 'stop' | 'correction',
-  ) => void;
+  /** 飞书流式卡片按钮中断回调 */
+  onCardInterrupt?: (chatJid: string) => void;
 }
 
 export interface IMChannel {
@@ -143,7 +140,7 @@ export function createFeishuChannel(config: FeishuConnectionConfig): IMChannel {
         onBotAddedToGroup: opts.onBotAddedToGroup,
         onBotRemovedFromGroup: opts.onBotRemovedFromGroup,
         shouldProcessGroupMessage: opts.shouldProcessGroupMessage,
-        onInterruptRequest: opts.onInterruptRequest,
+        onCardInterrupt: opts.onCardInterrupt,
       });
       if (!connected) {
         inner = null;
@@ -274,7 +271,6 @@ export function createTelegramChannel(
           onAgentMessage: opts.onAgentMessage,
           onBotAddedToGroup: opts.onBotAddedToGroup,
           onBotRemovedFromGroup: opts.onBotRemovedFromGroup,
-          onInterruptRequest: opts.onInterruptRequest,
         });
         return inner.isConnected();
       } catch (err) {
@@ -385,7 +381,6 @@ export function createQQChannel(config: QQConnectionConfig): IMChannel {
           resolveGroupFolder: opts.resolveGroupFolder,
           resolveEffectiveChatJid: opts.resolveEffectiveChatJid,
           onAgentMessage: opts.onAgentMessage,
-          onInterruptRequest: opts.onInterruptRequest,
         });
         return inner.isConnected();
       } catch (err) {

@@ -51,7 +51,6 @@ HappyClaw 是一个自托管的多用户 AI Agent 系统：
 | `src/web-context.ts` | Web 共享状态：`WebDeps` 依赖注入、群组访问权限检查、WS 客户端管理 |
 | `src/middleware/auth.ts` | 认证中间件：Cookie Session 校验、权限检查中间件工厂 |
 | `src/im-channel.ts` | 统一 IM 通道接口（`IMChannel`）、Feishu/Telegram 适配器工厂 |
-| `src/intent-analyzer.ts` | 消息意图分析：stop/correction/continue 识别 |
 | `src/commands.ts` | Web 端斜杠命令处理器（`/clear` 重置会话） |
 | `src/im-command-utils.ts` | IM 斜杠命令纯函数工具：`formatWorkspaceList()`、`formatContextMessages()` |
 | `src/telegram-pairing.ts` | Telegram 配对码：6 位随机码，5 分钟过期 |
@@ -366,6 +365,7 @@ data/
   config/registration.json                 # 注册设置（开关、邀请码要求）
   config/session-secret.key                # 会话签名密钥（0600 权限）
   config/system-settings.json              # 系统运行参数（容器超时、并发限制等）
+  streaming-buffer/                         # 流式文本磁盘缓冲（崩溃恢复用，自动清理）
   skills/{userId}/                         # 用户级 Skills 数据
   mcp-servers/{userId}/servers.json        # 用户 MCP Servers 配置
 

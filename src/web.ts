@@ -82,7 +82,6 @@ import type {
 } from './types.js';
 import { WEB_PORT, SESSION_COOKIE_NAME, ASSISTANT_NAME } from './config.js';
 import { logger } from './logger.js';
-import { analyzeIntent } from './intent-analyzer.js';
 import { executeSessionReset } from './commands.js';
 import {
   normalizeImageAttachments,
@@ -338,13 +337,11 @@ async function handleWebUserMessage(
   // longer need to kill and restart the process (#99).
   let pipedToActive = false;
   const images = toAgentImages(normalizedAttachments);
-  const intent = analyzeIntent(content);
   const updateRoute = deps.updateReplyRoute;
   const sendResult = deps.queue.sendMessage(
     chatJid,
     formatted,
     images,
-    intent,
     () => {
       // IPC write succeeded — update reply route for home groups.
       // Web messages have no IM source, so clear the IM route.
@@ -352,12 +349,6 @@ async function handleWebUserMessage(
     },
   );
   if (sendResult === 'sent') {
-    pipedToActive = true;
-  } else if (sendResult === 'interrupted_stop') {
-    // Stop intent: cursor updated, no enqueue needed
-    pipedToActive = true;
-  } else if (sendResult === 'interrupted_correction') {
-    // Correction intent: IPC message written, agent handles it after interrupt
     pipedToActive = true;
   } else if (sendResult === 'queued') {
     // Message queued for next container run; don't advance cursor so
@@ -460,13 +451,11 @@ async function handleAgentConversationMessage(
   );
 
   // Try to pipe into running agent process
-  const agentIntent = analyzeIntent(content);
   const agentImages = toAgentImages(normalizedAttachments);
   const agentSendResult = deps.queue.sendMessage(
     virtualChatJid,
     formatted,
     agentImages,
-    agentIntent,
   );
   if (agentSendResult === 'no_active') {
     // No running process — start one via processAgentConversation
@@ -477,8 +466,7 @@ async function handleAgentConversationMessage(
       });
     }
   }
-  // 'sent', 'interrupted_stop', 'interrupted_correction' need no further action —
-  // for correction, the IPC message was written and the agent handles it after interrupt
+  // 'sent' needs no further action
 }
 
 // --- Static Files ---
@@ -598,7 +586,9 @@ function setupWebSocket(server: any): WebSocketServer {
         if (!snap.partialText && snap.activeTools.length === 0 && snap.recentEvents.length === 0) {
           continue;
         }
-        const allowed = getGroupAllowedUserIds(jid);
+        // Strip #agent: suffix for ACL lookup (virtual JIDs not in registered_groups)
+        const baseJid = jid.includes('#agent:') ? jid.split('#agent:')[0] : jid;
+        const allowed = getGroupAllowedUserIds(baseJid);
         if (allowed === null || !allowed.has(userId)) continue;
         try {
           ws.send(JSON.stringify({
@@ -612,6 +602,28 @@ function setupWebSocket(server: any): WebSocketServer {
               systemStatus: snap.systemStatus,
               turnId: snap.turnId,
             },
+          } satisfies WsMessageOut));
+        } catch { /* client not ready */ }
+      }
+    }
+
+    // Push runner_state: 'running' for all active groups on WS connect.
+    // This prevents a race where a late-arriving new_message clears
+    // waiting=false after snapshot restore, blocking all subsequent
+    // stream events. The runner_state event resets waiting=true.
+    if (connSession && deps) {
+      const userId = connSession.user_id;
+      const queueStatus = deps.queue.getStatus();
+      for (const g of queueStatus.groups) {
+        if (!g.active) continue;
+        const jid = normalizeHomeJid(g.jid);
+        const allowed = getGroupAllowedUserIds(g.jid);
+        if (allowed === null || !allowed.has(userId)) continue;
+        try {
+          ws.send(JSON.stringify({
+            type: 'runner_state',
+            chatJid: jid,
+            state: 'running',
           } satisfies WsMessageOut));
         } catch { /* client not ready */ }
       }
@@ -1433,6 +1445,8 @@ export function clearStreamingSnapshot(chatJid: string): void {
 export function getActiveStreamingTexts(): Map<string, string> {
   const result = new Map<string, string>();
   for (const [jid, fullText] of streamingFullTexts) {
+    // Skip agent virtual JIDs (e.g. web:main#agent:abc) — only persist main streams
+    if (jid.includes('#agent:')) continue;
     const text = fullText.trim();
     if (text) {
       result.set(jid, text);
@@ -1516,16 +1530,12 @@ export function broadcastRunnerState(
   if (state === 'idle') {
     streamingSnapshots.delete(jid);
     streamingFullTexts.delete(jid);
-    for (const key of streamingSnapshots.keys()) {
-      if (key.startsWith(jid + '#agent:')) {
-        streamingSnapshots.delete(key);
-      }
-    }
-    for (const key of streamingFullTexts.keys()) {
-      if (key.startsWith(jid + '#agent:')) {
-        streamingFullTexts.delete(key);
-      }
-    }
+    // Collect keys first, then delete (avoid mutating Map during iteration)
+    const agentPrefix = jid + '#agent:';
+    const snapshotKeysToDelete = [...streamingSnapshots.keys()].filter(k => k.startsWith(agentPrefix));
+    const fullTextKeysToDelete = [...streamingFullTexts.keys()].filter(k => k.startsWith(agentPrefix));
+    for (const key of snapshotKeysToDelete) streamingSnapshots.delete(key);
+    for (const key of fullTextKeysToDelete) streamingFullTexts.delete(key);
   }
 }
 
