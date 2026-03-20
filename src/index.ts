@@ -681,8 +681,8 @@ async function handleCommand(
   command: string,
 ): Promise<string | null> {
   const parts = command.split(/\s+/);
-  const cmd = parts[0];
-  const rawArgs = command.slice(cmd.length).trim();
+  const cmd = parts[0].toLowerCase();
+  const rawArgs = command.slice(parts[0].length).trim();
 
   switch (cmd) {
     case 'clear':

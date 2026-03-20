@@ -738,7 +738,7 @@ function setupWebSocket(server: any): WebSocketServer {
           }
 
           // ── /clear command: reset session without entering message pipeline ──
-          if (content.trim() === '/clear' && deps) {
+          if (content.trim().toLowerCase() === '/clear' && deps) {
             const targetGroup = getRegisteredGroup(chatJid);
             if (targetGroup) {
               try {
