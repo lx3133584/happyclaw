@@ -881,9 +881,25 @@ function handleListCommand(chatJid: string): string {
   const workspaces = collectWorkspaces(userId);
   if (workspaces.length === 0) return '没有可用的工作区';
 
+  const lookupGroup = (jid: string) =>
+    registeredGroups[jid] ?? getRegisteredGroup(jid);
+  const location = resolveLocationInfo(
+    group,
+    lookupGroup,
+    getAgent,
+    findGroupNameByFolder,
+  );
+
+  const currentAgentId = group.target_agent_id ?? null;
+  const currentOnMain = !currentAgentId;
+
   return (
-    formatWorkspaceList(workspaces, group.folder, null) +
-    '\n💡 使用 /bind <workspace> 或 /bind <workspace>/<agent短ID>'
+    formatWorkspaceList(
+      workspaces,
+      location.folder,
+      currentAgentId,
+      currentOnMain,
+    ) + '\n💡 使用 /bind <workspace> 或 /bind <workspace>/<agent短ID>'
   );
 }
 
