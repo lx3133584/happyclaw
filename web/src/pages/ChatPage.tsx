@@ -29,6 +29,7 @@ export function ChatPage() {
 
   // Sync URL param to store selection. No auto-redirect to home container —
   // users land on the welcome screen and choose a container manually.
+  const loadGroups = useChatStore((s) => s.loadGroups);
   useEffect(() => {
     if (!groupFolder) return;
     if (routeGroupJid && currentGroup !== routeGroupJid) {
@@ -36,9 +37,20 @@ export function ChatPage() {
       return;
     }
     if (hasGroups && !routeGroupJid) {
-      navigate('/chat', { replace: true });
+      // Group not found — may be newly created (task workspace). Retry once after refresh.
+      loadGroups().then(() => {
+        const freshGroups = useChatStore.getState().groups;
+        const found = Object.entries(freshGroups).find(
+          ([jid, info]) => info.folder === groupFolder && jid.startsWith('web:'),
+        );
+        if (found) {
+          selectGroup(found[0]);
+        } else {
+          navigate('/chat', { replace: true });
+        }
+      });
     }
-  }, [groupFolder, routeGroupJid, hasGroups, currentGroup, selectGroup, navigate]);
+  }, [groupFolder, routeGroupJid, hasGroups, currentGroup, selectGroup, navigate, loadGroups]);
 
   const activeGroupJid = groupFolder ? routeGroupJid : currentGroup;
   const chatViewRef = useRef<HTMLDivElement>(null);

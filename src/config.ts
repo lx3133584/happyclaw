@@ -25,9 +25,9 @@ export const MAIN_GROUP_FOLDER = 'main';
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'happyclaw-agent:latest';
 // Timezone for scheduled tasks (cron expressions, etc.)
-// Uses system timezone by default
+// Uses TZ env var with Asia/Shanghai fallback
 export const TIMEZONE =
-  process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai';
 
 // Web server configuration
 export const WEB_PORT = parseInt(process.env.WEB_PORT || '3000', 10);

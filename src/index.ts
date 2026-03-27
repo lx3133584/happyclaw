@@ -158,14 +158,20 @@ import {
   broadcastTyping,
   broadcastStreamEvent,
   broadcastAgentStatus,
+  broadcastGroupCreated,
   broadcastBillingUpdate,
   shutdownTerminals,
   shutdownWebServer,
   getActiveStreamingTexts,
   clearStreamingSnapshot,
 } from './web.js';
-import { installSkillForUser, deleteSkillForUser, syncHostSkillsForUser } from './routes/skills.js';
+import {
+  installSkillForUser,
+  deleteSkillForUser,
+  syncHostSkillsForUser,
+} from './routes/skills.js';
 import { verifyPairingCode } from './telegram-pairing.js';
+import { sdkQuery } from './sdk-query.js';
 import { executeSessionReset } from './commands.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -222,7 +228,10 @@ function feedStreamEventToCard(
       }
       break;
     case 'hook_started':
-      session.setHook({ hookName: se.hookName || '', hookEvent: se.hookEvent || '' });
+      session.setHook({
+        hookName: se.hookName || '',
+        hookEvent: se.hookEvent || '',
+      });
       break;
     case 'hook_response':
       if (se.hookName) {
@@ -235,7 +244,9 @@ function feedStreamEventToCard(
       break;
     case 'task_start':
       if (se.toolUseId) {
-        const label = se.taskDescription ? `Task: ${se.taskDescription.slice(0, 40)}` : 'Task';
+        const label = se.taskDescription
+          ? `Task: ${se.taskDescription.slice(0, 40)}`
+          : 'Task';
         session.startTool(se.toolUseId, label);
         session.pushRecentEvent(`🚀 ${label}`);
       }
@@ -244,13 +255,18 @@ function feedStreamEventToCard(
       if (se.toolUseId || se.taskId) {
         const id = se.toolUseId || se.taskId || '';
         session.endTool(id, false);
-        const label = se.taskSummary ? `Task: ${se.taskSummary.slice(0, 40)}` : 'Task 完成';
+        const label = se.taskSummary
+          ? `Task: ${se.taskSummary.slice(0, 40)}`
+          : 'Task 完成';
         session.pushRecentEvent(`✅ ${label}`);
       }
       break;
     case 'hook_progress':
       // Update hook state (no card push needed — card already shows hook indicator)
-      session.setHook({ hookName: se.hookName || '', hookEvent: se.hookEvent || '' });
+      session.setHook({
+        hookName: se.hookName || '',
+        hookEvent: se.hookEvent || '',
+      });
       break;
     case 'usage':
       if (se.usage) session.patchUsageNote(se.usage);
@@ -279,7 +295,8 @@ function setCursors(jid: string, cursor: MessageCursor): void {
 /** Advance cursors to `candidate`, never regressing behind existing position. */
 function advanceCursors(jid: string, candidate: MessageCursor): void {
   const current = lastAgentTimestamp[jid];
-  const target = current && current.timestamp > candidate.timestamp ? current : candidate;
+  const target =
+    current && current.timestamp > candidate.timestamp ? current : candidate;
   lastAgentTimestamp[jid] = target;
   lastCommittedCursor[jid] = target;
   saveState();
@@ -291,7 +308,10 @@ let shuttingDown = false;
 // ── IPC Watcher Manager (event-driven fs.watch + fallback polling) ──
 
 class IpcWatcherManager {
-  private watchers = new Map<string, { watchers: fs.FSWatcher[], refCount: number }>();
+  private watchers = new Map<
+    string,
+    { watchers: fs.FSWatcher[]; refCount: number }
+  >();
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private processingFolders = new Set<string>();
   private pendingReprocess = new Set<string>();
@@ -349,7 +369,11 @@ class IpcWatcherManager {
     entry.refCount--;
     if (entry.refCount > 0) return;
 
-    for (const w of entry.watchers) { try { w.close(); } catch {} }
+    for (const w of entry.watchers) {
+      try {
+        w.close();
+      } catch {}
+    }
     this.watchers.delete(folder);
     const timer = this.debounceTimers.get(folder);
     if (timer) {
@@ -361,25 +385,33 @@ class IpcWatcherManager {
   private debouncedProcess(folder: string): void {
     const existing = this.debounceTimers.get(folder);
     if (existing) clearTimeout(existing);
-    this.debounceTimers.set(folder, setTimeout(() => {
-      this.debounceTimers.delete(folder);
-      // Skip if a previous processGroupIpc call for this folder is still running;
-      // the pending flag ensures we re-process after the current run finishes.
-      if (this.processingFolders.has(folder)) {
-        this.pendingReprocess.add(folder);
-        return;
-      }
-      this.processingFolders.add(folder);
-      this.processGroupFn?.(folder)
-        .catch((err) => { logger.error({ err, folder }, 'Error processing IPC for group'); })
-        .finally(() => {
-          this.processingFolders.delete(folder);
-          // Files may have arrived during processing — run once more
-          if (this.pendingReprocess.delete(folder) && this.watchers.has(folder)) {
-            this.debouncedProcess(folder);
-          }
-        });
-    }, 100));
+    this.debounceTimers.set(
+      folder,
+      setTimeout(() => {
+        this.debounceTimers.delete(folder);
+        // Skip if a previous processGroupIpc call for this folder is still running;
+        // the pending flag ensures we re-process after the current run finishes.
+        if (this.processingFolders.has(folder)) {
+          this.pendingReprocess.add(folder);
+          return;
+        }
+        this.processingFolders.add(folder);
+        this.processGroupFn?.(folder)
+          .catch((err) => {
+            logger.error({ err, folder }, 'Error processing IPC for group');
+          })
+          .finally(() => {
+            this.processingFolders.delete(folder);
+            // Files may have arrived during processing — run once more
+            if (
+              this.pendingReprocess.delete(folder) &&
+              this.watchers.has(folder)
+            ) {
+              this.debouncedProcess(folder);
+            }
+          });
+      }, 100),
+    );
   }
 
   /** Trigger processing for a folder through the concurrency guard. */
@@ -401,7 +433,11 @@ class IpcWatcherManager {
   /** Close all watchers and timers. */
   closeAll(): void {
     for (const [, entry] of this.watchers) {
-      for (const w of entry.watchers) { try { w.close(); } catch {} }
+      for (const w of entry.watchers) {
+        try {
+          w.close();
+        } catch {}
+      }
     }
     this.watchers.clear();
     for (const [, timer] of this.debounceTimers) {
@@ -567,7 +603,10 @@ function writeUsageRecords(opts: {
     costUSD: number;
     durationMs: number;
     numTurns: number;
-    modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }>;
+    modelUsage?: Record<
+      string,
+      { inputTokens: number; outputTokens: number; costUSD: number }
+    >;
   };
 }): void {
   const { userId, groupFolder, messageId, agentId, usage } = opts;
@@ -584,8 +623,12 @@ function writeUsageRecords(opts: {
         inputTokens: mu.inputTokens,
         outputTokens: mu.outputTokens,
         // Assign root-level cache tokens to the first model entry
-        cacheReadInputTokens: cacheReadAssigned ? 0 : usage.cacheReadInputTokens,
-        cacheCreationInputTokens: cacheReadAssigned ? 0 : usage.cacheCreationInputTokens,
+        cacheReadInputTokens: cacheReadAssigned
+          ? 0
+          : usage.cacheReadInputTokens,
+        cacheCreationInputTokens: cacheReadAssigned
+          ? 0
+          : usage.cacheCreationInputTokens,
         costUSD: mu.costUSD,
         durationMs: usage.durationMs,
         numTurns: usage.numTurns,
@@ -609,6 +652,43 @@ function writeUsageRecords(opts: {
       numTurns: usage.numTurns,
       source: 'agent',
     });
+  }
+}
+
+/**
+ * Detect Feishu interactive card JSON and extract readable text for web display.
+ * Returns null if the text is not a Feishu card.
+ */
+function extractFeishuCardText(text: string): string | null {
+  if (!text.startsWith('{"type":"interactive"')) return null;
+  try {
+    const card = JSON.parse(text);
+    if (card.type !== 'interactive' || !card.card) return null;
+    const parts: string[] = [];
+    // Extract header title
+    const title = card.card.header?.title?.content;
+    if (title) parts.push(`**${title}**\n`);
+    // Extract markdown content from elements
+    for (const el of card.card.elements || []) {
+      if (el.tag === 'markdown' && el.content) {
+        parts.push(el.content);
+      } else if (el.tag === 'column_set') {
+        for (const col of el.columns || []) {
+          for (const colEl of col.elements || []) {
+            if (colEl.tag === 'markdown' && colEl.content) {
+              parts.push(colEl.content);
+            }
+          }
+        }
+      } else if (el.tag === 'note') {
+        for (const noteEl of el.elements || []) {
+          if (noteEl.content) parts.push(`_${noteEl.content}_`);
+        }
+      }
+    }
+    return parts.length > 0 ? parts.join('\n\n') : null;
+  } catch {
+    return null;
   }
 }
 
@@ -689,9 +769,14 @@ async function retryImOperation(
       await fn();
       return true;
     } catch (err) {
-      logger.warn({ imJid, attempt, label, err }, 'IM operation attempt failed');
+      logger.warn(
+        { imJid, attempt, label, err },
+        'IM operation attempt failed',
+      );
       if (attempt < IM_SEND_MAX_RETRIES - 1) {
-        await new Promise(r => setTimeout(r, IM_SEND_RETRY_DELAY_MS * (attempt + 1)));
+        await new Promise((r) =>
+          setTimeout(r, IM_SEND_RETRY_DELAY_MS * (attempt + 1)),
+        );
       }
     }
   }
@@ -910,9 +995,8 @@ async function handleClearCommand(chatJid: string): Promise<string> {
   const agentId = group.target_agent_id || undefined;
   // IM 群绑定工作区主对话时，使用工作区 JID 清除上下文，
   // 确保 divider 插入到工作区消息流（Web 端可见）。
-  const effectiveJid = (group.target_main_jid && !agentId)
-    ? group.target_main_jid
-    : chatJid;
+  const effectiveJid =
+    group.target_main_jid && !agentId ? group.target_main_jid : chatJid;
 
   try {
     await executeSessionReset(
@@ -1190,7 +1274,10 @@ function handleBindCommand(chatJid: string, rawSpec: string): string {
   return `已切换到 ${resolved.display}\n🔁 回复策略: source_only`;
 }
 
-async function handleNewCommand(chatJid: string, rawName: string): Promise<string> {
+async function handleNewCommand(
+  chatJid: string,
+  rawName: string,
+): Promise<string> {
   const group = registeredGroups[chatJid] ?? getRegisteredGroup(chatJid);
   if (!group) return '当前 IM 未绑定工作区';
   const userId = group.created_by;
@@ -1358,64 +1445,13 @@ async function handleRecallCommand(chatJid: string): Promise<string> {
 }
 
 /**
- * Call Claude CLI (`claude --print`) to summarize a conversation transcript.
- * Uses the same auth mechanism (OAuth / API Key) as normal agent conversations.
- * Returns null if CLI is unavailable or call fails.
+ * Summarize a conversation transcript using Claude Agent SDK.
+ * Uses the provider configured in the web settings page.
  */
 async function summarizeWithClaude(transcript: string): Promise<string | null> {
   const prompt = `请用简洁的中文总结以下对话的要点和进展，重点说明讨论了什么、达成了什么结论、还有什么待办事项。不要逐条翻译，而是提炼核心信息。\n\n${transcript}`;
-
-  return new Promise((resolve) => {
-    logger.info(
-      { promptLen: prompt.length },
-      'summarizeWithClaude: invoking claude CLI via stdin',
-    );
-
-    const model = process.env.RECALL_MODEL || '';
-    const args = ['--print'];
-    if (model) {
-      args.push('--model', model);
-    }
-
-    const child = execFile(
-      'claude',
-      args,
-      {
-        timeout: 30000,
-        maxBuffer: 1024 * 1024,
-        env: { ...process.env, CLAUDECODE: '' },
-      },
-      (err, stdout, stderr) => {
-        if (err) {
-          const e = err as Error & { code?: number | string };
-          logger.warn(
-            {
-              message: e.message?.slice(0, 200),
-              code: e.code,
-              stderr: stderr?.slice(0, 300),
-              stdout: stdout?.slice(0, 300),
-            },
-            'summarizeWithClaude: CLI call failed',
-          );
-          resolve(null);
-          return;
-        }
-        const text = stdout.trim();
-        logger.info(
-          {
-            stdoutLen: text.length,
-            stderr: stderr?.trim().slice(0, 200) || '',
-          },
-          'summarizeWithClaude: CLI returned',
-        );
-        resolve(text || null);
-      },
-    );
-
-    // Feed prompt via stdin to avoid arg length limits and special char issues
-    child.stdin?.write(prompt);
-    child.stdin?.end();
-  });
+  const model = process.env.RECALL_MODEL || undefined;
+  return sdkQuery(prompt, { model, timeout: 30_000 });
 }
 
 // ─── /sw & /spawn: parallel task spawning ────────────────────────
@@ -1504,9 +1540,8 @@ async function handleSpawnCommand(
   const messageId = crypto.randomUUID();
   const user = getUserById(userId);
   const senderName = user?.display_name || user?.username || userId;
-  const truncatedName = message.length > 30
-    ? message.slice(0, 30) + '…'
-    : message;
+  const truncatedName =
+    message.length > 30 ? message.slice(0, 30) + '…' : message;
   const agentName = `⚡ ${truncatedName}`;
 
   // Create agent record
@@ -1554,7 +1589,15 @@ async function handleSpawnCommand(
     is_from_me: false,
   });
 
-  broadcastAgentStatus(homeChatJid, agentId, 'idle', agentName, '', undefined, 'spawn');
+  broadcastAgentStatus(
+    homeChatJid,
+    agentId,
+    'idle',
+    agentName,
+    '',
+    undefined,
+    'spawn',
+  );
 
   // For IM-originated /sw, mirror the command into homeChatJid so Web chat
   // shows what was requested. Web path handles this in web.ts instead.
@@ -1562,13 +1605,26 @@ async function handleSpawnCommand(
     ensureChatExists(homeChatJid);
     // source_kind='user_command' prevents the polling loop from picking it up.
     const cmdId = crypto.randomUUID();
-    storeMessageDirect(cmdId, homeChatJid, userId, senderName, `/sw ${message}`, now, false, {
-      meta: { sourceKind: 'user_command' },
-    });
+    storeMessageDirect(
+      cmdId,
+      homeChatJid,
+      userId,
+      senderName,
+      `/sw ${message}`,
+      now,
+      false,
+      {
+        meta: { sourceKind: 'user_command' },
+      },
+    );
     broadcastNewMessage(homeChatJid, {
-      id: cmdId, chat_jid: homeChatJid,
-      sender: userId, sender_name: senderName,
-      content: `/sw ${message}`, timestamp: now, is_from_me: false,
+      id: cmdId,
+      chat_jid: homeChatJid,
+      sender: userId,
+      sender_name: senderName,
+      content: `/sw ${message}`,
+      timestamp: now,
+      is_from_me: false,
     });
   }
 
@@ -1579,7 +1635,14 @@ async function handleSpawnCommand(
   });
 
   logger.info(
-    { chatJid, homeChatJid, agentId, userId, sourceImJid, folder: effectiveGroup.folder },
+    {
+      chatJid,
+      homeChatJid,
+      agentId,
+      userId,
+      sourceImJid,
+      folder: effectiveGroup.folder,
+    },
     '/spawn command: agent created and enqueued',
   );
 
@@ -1729,7 +1792,9 @@ function loadState(): void {
       }
     }
     if (migrated) {
-      logger.info('Migrated missing lastCommittedCursor entries from lastAgentTimestamp');
+      logger.info(
+        'Migrated missing lastCommittedCursor entries from lastAgentTimestamp',
+      );
       saveState();
     }
   }
@@ -2096,7 +2161,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const isRecovery = recoveryGroups.delete(chatJid);
   if (isRecovery) {
     const RECOVERY_HISTORY_LIMIT = 20;
-    const recentHistory = getMessagesPage(chatJid, undefined, RECOVERY_HISTORY_LIMIT);
+    const recentHistory = getMessagesPage(
+      chatJid,
+      undefined,
+      RECOVERY_HISTORY_LIMIT,
+    );
     // getMessagesPage returns DESC order; reverse to chronological, exclude
     // the pending messages themselves (already in prompt).
     const pendingIds = new Set(missedMessages.map((m) => m.id));
@@ -2106,9 +2175,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (historyMsgs.length > 0) {
       const historyLines = historyMsgs.map((m) => {
         const role = m.is_from_me ? 'assistant' : m.sender_name;
-        const truncated = m.content.length > 500
-          ? m.content.slice(0, 500) + '…'
-          : m.content;
+        const truncated =
+          m.content.length > 500 ? m.content.slice(0, 500) + '…' : m.content;
         // Strip lone surrogates to avoid API JSON errors
         const cleaned = truncated.replace(/[\uD800-\uDFFF]/g, '');
         return `[${role}] ${cleaned}`;
@@ -2161,7 +2229,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let lastError = '';
   let cursorCommitted = false;
   let lastReplyMsgId: string | undefined;
-  let lastSavedTurnId: string | undefined;  // tracks last turnId saved to DB, prevents UPSERT overwrite
+  let lastSavedTurnId: string | undefined; // tracks last turnId saved to DB, prevents UPSERT overwrite
   const queryTaskIds = new Set<string>();
   const lastProcessed = missedMessages[missedMessages.length - 1];
 
@@ -2171,8 +2239,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let streamingSessionJid = replySourceImJid ?? chatJid;
   const makeOnCardCreated = (jid: string) => (messageId: string) =>
     registerMessageIdMapping(messageId, jid);
-  let streamingSession =
-    imManager.createStreamingSession(streamingSessionJid, makeOnCardCreated(streamingSessionJid));
+  let streamingSession = imManager.createStreamingSession(
+    streamingSessionJid,
+    makeOnCardCreated(streamingSessionJid),
+  );
   let streamingAccumulatedText = '';
   let streamingAccumulatedThinking = '';
   let streamInterrupted = false;
@@ -2205,14 +2275,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // When the route is cleared to null (web message injected into IM-originated
     // session), fall back to the web JID — NOT the original IM chatJid — so the
     // Feishu streaming card is properly disposed.
-    const newStreamingJid = replySourceImJid ?? (directImReply ? `web:${effectiveGroup.folder}` : chatJid);
+    const newStreamingJid =
+      replySourceImJid ??
+      (directImReply ? `web:${effectiveGroup.folder}` : chatJid);
     if (newStreamingJid !== streamingSessionJid) {
       if (streamingSession) {
         if (streamingSession.isActive()) streamingSession.dispose();
         unregisterStreamingSession(streamingSessionJid);
       }
       streamingSessionJid = newStreamingJid;
-      streamingSession = imManager.createStreamingSession(streamingSessionJid, makeOnCardCreated(streamingSessionJid));
+      streamingSession = imManager.createStreamingSession(
+        streamingSessionJid,
+        makeOnCardCreated(streamingSessionJid),
+      );
       streamingAccumulatedText = '';
       streamingAccumulatedThinking = '';
       if (streamingSession) {
@@ -2243,7 +2318,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const commitCursor = (): void => {
     if (cursorCommitted) return;
-    advanceCursors(chatJid, { timestamp: lastProcessed.timestamp, id: lastProcessed.id });
+    advanceCursors(chatJid, {
+      timestamp: lastProcessed.timestamp,
+      id: lastProcessed.id,
+    });
     cursorCommitted = true;
   };
 
@@ -2273,393 +2351,51 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   }
 
-  let output: { status: 'success' | 'error' | 'closed'; error?: string } | undefined;
+  let output:
+    | { status: 'success' | 'error' | 'closed'; error?: string }
+    | undefined;
   let activeSessionId = getSession(effectiveGroup.folder) || undefined;
   try {
-  output = await runAgent(
-    effectiveGroup,
-    prompt,
-    chatJid,
-    lastProcessed.id,
-    async (result) => {
-      try {
-        if (result.newSessionId && result.status !== 'error') {
-          activeSessionId = result.newSessionId;
-        }
-        // 流式事件处理 - 广播 WebSocket + 持久化 SDK Task 生命周期到 DB
-        if (result.status === 'stream' && result.streamEvent) {
-          broadcastStreamEvent(chatJid, result.streamEvent);
-
-          // ── 累积 text_delta / thinking_delta 文本（中断时用于保存已输出内容）──
-          if (result.streamEvent.eventType === 'text_delta' && result.streamEvent.text) {
-            streamingAccumulatedText += result.streamEvent.text;
+    output = await runAgent(
+      effectiveGroup,
+      prompt,
+      chatJid,
+      lastProcessed.id,
+      async (result) => {
+        try {
+          if (result.newSessionId && result.status !== 'error') {
+            activeSessionId = result.newSessionId;
           }
-          if (result.streamEvent.eventType === 'thinking_delta' && result.streamEvent.text) {
-            streamingAccumulatedThinking += result.streamEvent.text;
-          }
+          // 流式事件处理 - 广播 WebSocket + 持久化 SDK Task 生命周期到 DB
+          if (result.status === 'stream' && result.streamEvent) {
+            broadcastStreamEvent(chatJid, result.streamEvent);
 
-          // ── Feed stream events into Feishu streaming card ──
-          // IPC 注入的新 query 开始时，旧卡片已 complete()/abort()，
-          // 需要为新 query 重建流式卡片并重置会话级状态。
-          if (streamingSession && !streamingSession.isActive()) {
-            unregisterStreamingSession(streamingSessionJid);
-            streamingAccumulatedText = '';
-            streamingAccumulatedThinking = '';
-            // Note: sentReply is NOT reset here. Resetting it would cause
-            // subsequent SDK Task results to be sent to IM as separate messages,
-            // spamming the IM channel. The first substantive reply already
-            // delivered the main content; follow-up results are DB-only.
-            streamInterrupted = false;
-            streamingSession = imManager.createStreamingSession(
-              streamingSessionJid,
-              makeOnCardCreated(streamingSessionJid),
-            );
-            if (streamingSession) {
-              registerStreamingSession(streamingSessionJid, streamingSession);
-              logger.debug({ chatJid }, 'Rebuilt streaming card for IPC-injected query');
-            }
-          }
-          if (streamingSession) {
-            feedStreamEventToCard(streamingSession, result.streamEvent, streamingAccumulatedText);
-          }
-
-          // ── 中断时立即保存已输出内容 ──
-          // agent-runner 中断后不退出进程（进入 waitForIpcMessage），
-          // finally 块不会执行，必须在此处立即保存。
-          if (
-            result.streamEvent.eventType === 'status' &&
-            result.streamEvent.statusText === 'interrupted'
-          ) {
-            streamInterrupted = true;
-            // Skip if shutdown handler already saved this text (prevents duplicates)
-            const inlineWebJid = chatJid.startsWith('web:') ? chatJid : `web:${effectiveGroup.folder}`;
-            const inlineAlreadySaved = shutdownSavedJids.has(chatJid) || shutdownSavedJids.has(inlineWebJid);
-            if (!sentReply && !inlineAlreadySaved) {
-              const interruptedText = buildInterruptedReply(streamingAccumulatedText, streamingAccumulatedThinking);
-              try {
-                if (streamingSession?.isActive()) {
-                  await streamingSession.abort('已中断').catch(() => {});
-                }
-                lastReplyMsgId = await sendMessage(chatJid, interruptedText, {
-                  sendToIM: false,
-                  messageMeta: {
-                    turnId: result.streamEvent.turnId || lastProcessed.id,
-                    sessionId: result.streamEvent.sessionId || activeSessionId,
-                    sourceKind: 'interrupt_partial',
-                    finalizationReason: 'interrupted',
-                  },
-                });
-                sentReply = true;
-                clearStreamingSnapshot(chatJid);
-                streamingAccumulatedText = '';
-                streamingAccumulatedThinking = '';
-                commitCursor();
-              } catch (err) {
-                logger.warn({ err, chatJid }, 'Failed to save interrupted text on status event');
-              }
-            }
-          }
-
-          // Persist SDK Task lifecycle to DB so tabs survive page refresh
-          const se = result.streamEvent;
-          if (
-            (se.eventType === 'task_start' && se.toolUseId) ||
-            (se.eventType === 'tool_use_start' &&
-              se.toolName === 'Task' &&
-              se.toolUseId)
-          ) {
-            try {
-              const taskId = se.toolUseId;
-              queryTaskIds.add(taskId);
-              const existing = getAgent(taskId);
-              const desc = se.taskDescription || se.toolInputSummary || '';
-              const taskName = desc.slice(0, 40) || existing?.name || 'Task';
-              if (!existing) {
-                createAgent({
-                  id: taskId,
-                  group_folder: group.folder,
-                  chat_jid: chatJid,
-                  name: taskName,
-                  prompt: desc,
-                  status: 'running',
-                  kind: 'task',
-                  created_by: null,
-                  created_at: new Date().toISOString(),
-                  completed_at: null,
-                  result_summary: null,
-                  last_im_jid: null,
-                  spawned_from_jid: null,
-                });
-              } else if (se.taskDescription) {
-                updateAgentInfo(
-                  taskId,
-                  se.taskDescription.slice(0, 40),
-                  se.taskDescription,
-                );
-              }
-              broadcastAgentStatus(
-                chatJid,
-                taskId,
-                'running',
-                taskName,
-                desc,
-                undefined,
-                'task',
-              );
-            } catch (err) {
-              logger.warn(
-                { err, toolUseId: se.toolUseId },
-                'Failed to persist task_start to DB',
-              );
-            }
-          }
-          if (se.eventType === 'tool_use_end' && se.toolUseId) {
-            try {
-              const existing = getAgent(se.toolUseId);
-              if (
-                existing &&
-                existing.kind === 'task' &&
-                existing.status === 'running'
-              ) {
-                updateAgentStatus(se.toolUseId, 'completed');
-                queryTaskIds.delete(existing.id);
-                broadcastAgentStatus(
-                  chatJid,
-                  existing.id,
-                  'completed',
-                  existing.name,
-                  existing.prompt,
-                  existing.result_summary || '任务已完成',
-                  'task',
-                );
-              }
-            } catch (err) {
-              logger.warn(
-                { err, toolUseId: se.toolUseId },
-                'Failed to persist tool_use_end to DB',
-              );
-            }
-          }
-          if (se.eventType === 'task_notification' && se.taskId) {
-            try {
-              const status =
-                se.taskStatus === 'completed' ? 'completed' : 'error';
-              const summary = se.taskSummary?.slice(0, 2000);
-              let targetTaskId = se.taskId;
-              let existing = getAgent(targetTaskId);
-              if (!existing || existing.kind !== 'task') {
-                // agent-runner now translates SDK task_id → toolUseId,
-                // so this fallback should rarely trigger. Keep as safety net.
-                const fallbackTaskId = pickRunningTaskForNotification();
-                if (fallbackTaskId) {
-                  targetTaskId = fallbackTaskId;
-                  existing = getAgent(fallbackTaskId);
-                  logger.debug(
-                    {
-                      chatJid,
-                      sdkTaskId: se.taskId,
-                      mappedTaskId: fallbackTaskId,
-                    },
-                    'Task notification ID fallback to running task',
-                  );
-                }
-              }
-
-              if (!existing) {
-                createAgent({
-                  id: targetTaskId,
-                  group_folder: group.folder,
-                  chat_jid: chatJid,
-                  name: 'Task',
-                  prompt: '',
-                  status,
-                  kind: 'task',
-                  created_by: null,
-                  created_at: new Date().toISOString(),
-                  completed_at: new Date().toISOString(),
-                  result_summary: summary || null,
-                  last_im_jid: null,
-                  spawned_from_jid: null,
-                });
-                broadcastAgentStatus(
-                  chatJid,
-                  targetTaskId,
-                  status,
-                  'Task',
-                  '',
-                  summary,
-                  'task',
-                );
-              } else if (existing.kind === 'task') {
-                updateAgentStatus(existing.id, status, summary);
-                queryTaskIds.delete(existing.id);
-                broadcastAgentStatus(
-                  chatJid,
-                  existing.id,
-                  status,
-                  existing.name,
-                  existing.prompt,
-                  summary,
-                  'task',
-                );
-              }
-            } catch (err) {
-              logger.warn(
-                { err, taskId: se.taskId },
-                'Failed to persist task_notification to DB',
-              );
-            }
-          }
-
-          // Persist token usage to the latest agent message + usage_records
-          if (se.eventType === 'usage' && se.usage) {
-            try {
-              updateLatestMessageTokenUsage(
-                chatJid,
-                JSON.stringify(se.usage),
-                lastReplyMsgId,
-                se.usage.costUSD,
-              );
-
-              // Write to usage_records + usage_daily_summary
-              writeUsageRecords({
-                userId: effectiveGroup.created_by || 'system',
-                groupFolder: effectiveGroup.folder,
-                messageId: lastReplyMsgId,
-                usage: se.usage,
-              });
-
-              logger.debug(
-                {
-                  chatJid,
-                  msgId: lastReplyMsgId,
-                  costUSD: se.usage.costUSD,
-                  inputTokens: se.usage.inputTokens,
-                },
-                'Token usage persisted',
-              );
-
-              // Update billing monthly usage
-              const ownerGroup = registeredGroups[chatJid];
-              if (ownerGroup?.created_by && se.usage.costUSD) {
-                try {
-                  const effective = updateUsage(
-                    ownerGroup.created_by,
-                    se.usage.costUSD,
-                    se.usage.inputTokens || 0,
-                    se.usage.outputTokens || 0,
-                  );
-                  deductUsageCost(
-                    ownerGroup.created_by,
-                    se.usage.costUSD,
-                    lastReplyMsgId || chatJid,
-                    effective,
-                  );
-                  // Broadcast real-time billing update to the user
-                  const owner = getUserById(ownerGroup.created_by);
-                  if (owner && owner.role !== 'admin') {
-                    const freshAccess = checkBillingAccessFresh(
-                      ownerGroup.created_by,
-                      owner.role,
-                    );
-                    if (freshAccess.usage) {
-                      broadcastBillingUpdate(ownerGroup.created_by, {
-                        ...freshAccess,
-                      });
-                    }
-                  }
-                } catch (billingErr) {
-                  logger.warn(
-                    { err: billingErr, chatJid },
-                    'Failed to update billing usage',
-                  );
-                }
-              }
-            } catch (err) {
-              logger.warn({ err, chatJid }, 'Failed to persist token usage');
-            }
-          }
-
-          // Reset idle timer on stream events so long-running tool calls
-          // (e.g. MCP batch writes) don't get killed while the agent is
-          // actively working. Previously only final results triggered a reset.
-          resetIdleTimer();
-          return;
-        }
-
-        // Streaming output callback — called for each agent result
-        if (result.result) {
-          const raw =
-            typeof result.result === 'string'
-              ? result.result
-              : JSON.stringify(result.result);
-          let text = stripAgentInternalTags(raw);
-          if (result.sourceKind === 'overflow_partial' || result.sourceKind === 'compact_partial') {
-            text = buildOverflowPartialReply(text);
-          }
-          // auto_continue outputs that consist solely of system-maintenance
-          // acknowledgements (e.g. "OK", "已更新 CLAUDE.md") are suppressed from
-          // IM delivery. These arise when the agent's session transcript contains
-          // memory-flush / CLAUDE.md-update context from the compaction pipeline
-          // and the agent echoes it back in the resumption query. Substantive
-          // user-facing continuations (longer replies or actual task resumption)
-          // pass through normally. See issue #275.
-          if (result.sourceKind === 'auto_continue' && isSystemMaintenanceNoise(text)) {
-            logger.info(
-              { group: group.name, textLen: text.length },
-              'auto_continue output suppressed (system maintenance noise)',
-            );
-            return;
-          }
-          logger.info(
-            { group: group.name },
-            `Agent output: ${raw.slice(0, 200)}`,
-          );
-          if (text) {
-            // Stop typing indicator before sending — clears the 4s refresh timer
-            // so it doesn't keep firing while the agent stays alive in idle state.
-            await setTyping(chatJid, false);
-            const localImagePaths = extractLocalImImagePaths(
-              text,
-              effectiveGroup.folder,
-            );
-
-            // ── Complete Feishu streaming card ──
-            // If a streaming card is active, finalize it with the complete text.
-            // The card replaces the normal IM sendMessage for the Feishu channel.
-            let streamingCardHandledIM = false;
-            if (streamingSession?.isActive()) {
-              try {
-                await streamingSession.complete(text);
-                streamingCardHandledIM = true;
-                // Streaming card replaced the normal sendMessage path,
-                // so clear the ack reaction that would normally be cleared in sendMessage.
-                imManager.clearAckReaction(chatJid);
-                logger.debug(
-                  { chatJid },
-                  'Streaming card completed with final text',
-                );
-              } catch (err) {
-                logger.warn(
-                  { err, chatJid },
-                  'Streaming card complete failed, falling back to static message',
-                );
-                // Abort the card so it doesn't stay stuck in "streaming" state
-                await streamingSession.abort('回复已通过消息发送').catch(() => {});
-                // Fall through to normal sendMessage
-              }
-            }
-
-            // ── Rebuild streaming card after compact_partial / overflow_partial ──
-            // The completed card was consumed; create a new one so post-compaction
-            // tool-call progress remains visible on Feishu (#223).
+            // ── 累积 text_delta / thinking_delta 文本（中断时用于保存已输出内容）──
             if (
-              streamingCardHandledIM &&
-              (result.sourceKind === 'compact_partial' || result.sourceKind === 'overflow_partial')
+              result.streamEvent.eventType === 'text_delta' &&
+              result.streamEvent.text
             ) {
+              streamingAccumulatedText += result.streamEvent.text;
+            }
+            if (
+              result.streamEvent.eventType === 'thinking_delta' &&
+              result.streamEvent.text
+            ) {
+              streamingAccumulatedThinking += result.streamEvent.text;
+            }
+
+            // ── Feed stream events into Feishu streaming card ──
+            // IPC 注入的新 query 开始时，旧卡片已 complete()/abort()，
+            // 需要为新 query 重建流式卡片并重置会话级状态。
+            if (streamingSession && !streamingSession.isActive()) {
               unregisterStreamingSession(streamingSessionJid);
               streamingAccumulatedText = '';
               streamingAccumulatedThinking = '';
+              // Note: sentReply is NOT reset here. Resetting it would cause
+              // subsequent SDK Task results to be sent to IM as separate messages,
+              // spamming the IM channel. The first substantive reply already
+              // delivered the main content; follow-up results are DB-only.
+              streamInterrupted = false;
               streamingSession = imManager.createStreamingSession(
                 streamingSessionJid,
                 makeOnCardCreated(streamingSessionJid),
@@ -2667,97 +2403,488 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               if (streamingSession) {
                 registerStreamingSession(streamingSessionJid, streamingSession);
                 logger.debug(
-                  { chatJid, sourceKind: result.sourceKind },
-                  'Rebuilt streaming card after partial output',
+                  { chatJid },
+                  'Rebuilt streaming card for IPC-injected query',
+                );
+              }
+            }
+            if (streamingSession) {
+              feedStreamEventToCard(
+                streamingSession,
+                result.streamEvent,
+                streamingAccumulatedText,
+              );
+            }
+
+            // ── 中断时立即保存已输出内容 ──
+            // agent-runner 中断后不退出进程（进入 waitForIpcMessage），
+            // finally 块不会执行，必须在此处立即保存。
+            if (
+              result.streamEvent.eventType === 'status' &&
+              result.streamEvent.statusText === 'interrupted'
+            ) {
+              streamInterrupted = true;
+              // Skip if shutdown handler already saved this text (prevents duplicates)
+              const inlineWebJid = chatJid.startsWith('web:')
+                ? chatJid
+                : `web:${effectiveGroup.folder}`;
+              const inlineAlreadySaved =
+                shutdownSavedJids.has(chatJid) ||
+                shutdownSavedJids.has(inlineWebJid);
+              if (!sentReply && !inlineAlreadySaved) {
+                const interruptedText = buildInterruptedReply(
+                  streamingAccumulatedText,
+                  streamingAccumulatedThinking,
+                );
+                try {
+                  if (streamingSession?.isActive()) {
+                    await streamingSession.abort('已中断').catch(() => {});
+                  }
+                  lastReplyMsgId = await sendMessage(chatJid, interruptedText, {
+                    sendToIM: false,
+                    messageMeta: {
+                      turnId: result.streamEvent.turnId || lastProcessed.id,
+                      sessionId:
+                        result.streamEvent.sessionId || activeSessionId,
+                      sourceKind: 'interrupt_partial',
+                      finalizationReason: 'interrupted',
+                    },
+                  });
+                  sentReply = true;
+                  clearStreamingSnapshot(chatJid);
+                  streamingAccumulatedText = '';
+                  streamingAccumulatedThinking = '';
+                  commitCursor();
+                } catch (err) {
+                  logger.warn(
+                    { err, chatJid },
+                    'Failed to save interrupted text on status event',
+                  );
+                }
+              }
+            }
+
+            // Persist SDK Task lifecycle to DB so tabs survive page refresh
+            const se = result.streamEvent;
+            if (
+              (se.eventType === 'task_start' && se.toolUseId) ||
+              (se.eventType === 'tool_use_start' &&
+                se.toolName === 'Task' &&
+                se.toolUseId)
+            ) {
+              try {
+                const taskId = se.toolUseId;
+                queryTaskIds.add(taskId);
+                const existing = getAgent(taskId);
+                const desc = se.taskDescription || se.toolInputSummary || '';
+                const taskName = desc.slice(0, 40) || existing?.name || 'Task';
+                if (!existing) {
+                  createAgent({
+                    id: taskId,
+                    group_folder: group.folder,
+                    chat_jid: chatJid,
+                    name: taskName,
+                    prompt: desc,
+                    status: 'running',
+                    kind: 'task',
+                    created_by: null,
+                    created_at: new Date().toISOString(),
+                    completed_at: null,
+                    result_summary: null,
+                    last_im_jid: null,
+                    spawned_from_jid: null,
+                  });
+                } else if (se.taskDescription) {
+                  updateAgentInfo(
+                    taskId,
+                    se.taskDescription.slice(0, 40),
+                    se.taskDescription,
+                  );
+                }
+                broadcastAgentStatus(
+                  chatJid,
+                  taskId,
+                  'running',
+                  taskName,
+                  desc,
+                  undefined,
+                  'task',
+                );
+              } catch (err) {
+                logger.warn(
+                  { err, toolUseId: se.toolUseId },
+                  'Failed to persist task_start to DB',
+                );
+              }
+            }
+            if (se.eventType === 'tool_use_end' && se.toolUseId) {
+              try {
+                const existing = getAgent(se.toolUseId);
+                if (
+                  existing &&
+                  existing.kind === 'task' &&
+                  existing.status === 'running'
+                ) {
+                  updateAgentStatus(se.toolUseId, 'completed');
+                  queryTaskIds.delete(existing.id);
+                  broadcastAgentStatus(
+                    chatJid,
+                    existing.id,
+                    'completed',
+                    existing.name,
+                    existing.prompt,
+                    existing.result_summary || '任务已完成',
+                    'task',
+                  );
+                }
+              } catch (err) {
+                logger.warn(
+                  { err, toolUseId: se.toolUseId },
+                  'Failed to persist tool_use_end to DB',
+                );
+              }
+            }
+            if (se.eventType === 'task_notification' && se.taskId) {
+              try {
+                const status =
+                  se.taskStatus === 'completed' ? 'completed' : 'error';
+                const summary = se.taskSummary?.slice(0, 2000);
+                let targetTaskId = se.taskId;
+                let existing = getAgent(targetTaskId);
+                if (!existing || existing.kind !== 'task') {
+                  // agent-runner now translates SDK task_id → toolUseId,
+                  // so this fallback should rarely trigger. Keep as safety net.
+                  const fallbackTaskId = pickRunningTaskForNotification();
+                  if (fallbackTaskId) {
+                    targetTaskId = fallbackTaskId;
+                    existing = getAgent(fallbackTaskId);
+                    logger.debug(
+                      {
+                        chatJid,
+                        sdkTaskId: se.taskId,
+                        mappedTaskId: fallbackTaskId,
+                      },
+                      'Task notification ID fallback to running task',
+                    );
+                  }
+                }
+
+                if (!existing) {
+                  createAgent({
+                    id: targetTaskId,
+                    group_folder: group.folder,
+                    chat_jid: chatJid,
+                    name: 'Task',
+                    prompt: '',
+                    status,
+                    kind: 'task',
+                    created_by: null,
+                    created_at: new Date().toISOString(),
+                    completed_at: new Date().toISOString(),
+                    result_summary: summary || null,
+                    last_im_jid: null,
+                    spawned_from_jid: null,
+                  });
+                  broadcastAgentStatus(
+                    chatJid,
+                    targetTaskId,
+                    status,
+                    'Task',
+                    '',
+                    summary,
+                    'task',
+                  );
+                } else if (existing.kind === 'task') {
+                  updateAgentStatus(existing.id, status, summary);
+                  queryTaskIds.delete(existing.id);
+                  broadcastAgentStatus(
+                    chatJid,
+                    existing.id,
+                    status,
+                    existing.name,
+                    existing.prompt,
+                    summary,
+                    'task',
+                  );
+                }
+              } catch (err) {
+                logger.warn(
+                  { err, taskId: se.taskId },
+                  'Failed to persist task_notification to DB',
                 );
               }
             }
 
-            // Skip IM send to the original chatJid when:
-            // 1. Streaming card already handled the IM delivery, OR
-            // 2. Reply route switched to a different IM channel (the routed IM
-            //    path below will deliver to the correct channel instead), OR
-            // 3. Reply route was cleared to null (web message injected into an
-            //    IM-originated session — replies should go to web only).
-            // Any send_message content is delivered independently via IPC watcher.
-            const routeCleared = directImReply && replySourceImJid === null;
-            const routeSwitchedAway = directImReply && replySourceImJid !== null && replySourceImJid !== chatJid;
-            const skipImSend = (streamingCardHandledIM && directImReply) || routeSwitchedAway || routeCleared;
-            // When the container stays alive and processes multiple IPC messages,
-            // result.turnId stays the same (set at container start).  If we already
-            // saved a reply with this turnId, the INSERT OR REPLACE would overwrite
-            // the previous reply.  Use a fresh ID to prevent that.
-            const effectiveTurnId = (result.turnId || lastProcessed.id);
-            const turnIdForDb = (sentReply && effectiveTurnId === lastSavedTurnId)
-              ? undefined  // no turnId → fresh INSERT, no UPSERT dedup
-              : effectiveTurnId;
+            // Persist token usage to the latest agent message + usage_records
+            if (se.eventType === 'usage' && se.usage) {
+              try {
+                updateLatestMessageTokenUsage(
+                  chatJid,
+                  JSON.stringify(se.usage),
+                  lastReplyMsgId,
+                  se.usage.costUSD,
+                );
 
-            lastReplyMsgId = await sendMessage(chatJid, text, {
-              sendToIM: directImReply && !skipImSend,
-              localImagePaths,
-              messageMeta: {
-                turnId: turnIdForDb,
-                sessionId: result.sessionId || activeSessionId,
-                sdkMessageUuid: result.sdkMessageUuid,
-                sourceKind: result.sourceKind || 'sdk_final',
-                finalizationReason: result.finalizationReason || 'completed',
-              },
-            });
-            lastSavedTurnId = effectiveTurnId;
+                // Write to usage_records + usage_daily_summary
+                writeUsageRecords({
+                  userId: effectiveGroup.created_by || 'system',
+                  groupFolder: effectiveGroup.folder,
+                  messageId: lastReplyMsgId,
+                  usage: se.usage,
+                });
 
-            // For routed IM (web JID with IM source), only send the FIRST
-            // substantive reply to IM. Subsequent results (e.g., SDK Task
-            // completions) are stored in DB but not spammed to IM.
-            // Streaming card already handles IM delivery for the first reply.
-            if (replySourceImJid && replySourceImJid !== chatJid) {
-              if (!streamingCardHandledIM && !sentReply) {
-                sendImWithFailTracking(replySourceImJid, text, localImagePaths);
+                logger.debug(
+                  {
+                    chatJid,
+                    msgId: lastReplyMsgId,
+                    costUSD: se.usage.costUSD,
+                    inputTokens: se.usage.inputTokens,
+                  },
+                  'Token usage persisted',
+                );
+
+                // Update billing monthly usage
+                const ownerGroup = registeredGroups[chatJid];
+                if (ownerGroup?.created_by && se.usage.costUSD) {
+                  try {
+                    const effective = updateUsage(
+                      ownerGroup.created_by,
+                      se.usage.costUSD,
+                      se.usage.inputTokens || 0,
+                      se.usage.outputTokens || 0,
+                    );
+                    deductUsageCost(
+                      ownerGroup.created_by,
+                      se.usage.costUSD,
+                      lastReplyMsgId || chatJid,
+                      effective,
+                    );
+                    // Broadcast real-time billing update to the user
+                    const owner = getUserById(ownerGroup.created_by);
+                    if (owner && owner.role !== 'admin') {
+                      const freshAccess = checkBillingAccessFresh(
+                        ownerGroup.created_by,
+                        owner.role,
+                      );
+                      if (freshAccess.usage) {
+                        broadcastBillingUpdate(ownerGroup.created_by, {
+                          ...freshAccess,
+                        });
+                      }
+                    }
+                  } catch (billingErr) {
+                    logger.warn(
+                      { err: billingErr, chatJid },
+                      'Failed to update billing usage',
+                    );
+                  }
+                }
+              } catch (err) {
+                logger.warn({ err, chatJid }, 'Failed to persist token usage');
               }
             }
 
-            // Optional mirror mode for explicitly bound IM channels
-            const webJid = chatJid.startsWith('web:')
-              ? chatJid
-              : `web:${effectiveGroup.folder}`;
-            for (const [imJid, g] of Object.entries(registeredGroups)) {
-              if (
-                g.target_main_jid !== webJid ||
-                imJid === chatJid ||
-                imJid === replySourceImJid
-              )
-                continue;
-              if (g.reply_policy !== 'mirror') continue;
-              if (getChannelType(imJid))
-                sendImWithFailTracking(imJid, text, localImagePaths);
-            }
-
-            sentReply = true;
-            // Clear streaming snapshot so the next turn starts fresh.
-            // Without this, saveInterruptedStreamingMessages() would merge
-            // text from multiple turns into one message on shutdown.
-            clearStreamingSnapshot(chatJid);
-            streamingAccumulatedText = '';
-            streamingAccumulatedThinking = '';
-            // Persist cursor as soon as a visible reply is emitted.
-            // Long-lived runners may stay alive for idleTimeout, and waiting
-            // until process exit would cause duplicate replay after restart.
-            commitCursor();
+            // Reset idle timer on stream events so long-running tool calls
+            // (e.g. MCP batch writes) don't get killed while the agent is
+            // actively working. Previously only final results triggered a reset.
+            resetIdleTimer();
+            return;
           }
-          // Only reset idle timer on actual results, not session-update markers (result: null)
-          resetIdleTimer();
-        }
 
-        if (result.status === 'error') {
+          // Streaming output callback — called for each agent result
+          if (result.result) {
+            const raw =
+              typeof result.result === 'string'
+                ? result.result
+                : JSON.stringify(result.result);
+            let text = stripAgentInternalTags(raw);
+            if (
+              result.sourceKind === 'overflow_partial' ||
+              result.sourceKind === 'compact_partial'
+            ) {
+              text = buildOverflowPartialReply(text);
+            }
+            // auto_continue outputs that consist solely of system-maintenance
+            // acknowledgements (e.g. "OK", "已更新 CLAUDE.md") are suppressed from
+            // IM delivery. These arise when the agent's session transcript contains
+            // memory-flush / CLAUDE.md-update context from the compaction pipeline
+            // and the agent echoes it back in the resumption query. Substantive
+            // user-facing continuations (longer replies or actual task resumption)
+            // pass through normally. See issue #275.
+            if (
+              result.sourceKind === 'auto_continue' &&
+              isSystemMaintenanceNoise(text)
+            ) {
+              logger.info(
+                { group: group.name, textLen: text.length },
+                'auto_continue output suppressed (system maintenance noise)',
+              );
+              return;
+            }
+            logger.info(
+              { group: group.name },
+              `Agent output: ${raw.slice(0, 200)}`,
+            );
+            if (text) {
+              // Stop typing indicator before sending — clears the 4s refresh timer
+              // so it doesn't keep firing while the agent stays alive in idle state.
+              await setTyping(chatJid, false);
+              const localImagePaths = extractLocalImImagePaths(
+                text,
+                effectiveGroup.folder,
+              );
+
+              // ── Complete Feishu streaming card ──
+              // If a streaming card is active, finalize it with the complete text.
+              // The card replaces the normal IM sendMessage for the Feishu channel.
+              let streamingCardHandledIM = false;
+              if (streamingSession?.isActive()) {
+                try {
+                  await streamingSession.complete(text);
+                  streamingCardHandledIM = true;
+                  // Streaming card replaced the normal sendMessage path,
+                  // so clear the ack reaction that would normally be cleared in sendMessage.
+                  imManager.clearAckReaction(chatJid);
+                  logger.debug(
+                    { chatJid },
+                    'Streaming card completed with final text',
+                  );
+                } catch (err) {
+                  logger.warn(
+                    { err, chatJid },
+                    'Streaming card complete failed, falling back to static message',
+                  );
+                  // Abort the card so it doesn't stay stuck in "streaming" state
+                  await streamingSession
+                    .abort('回复已通过消息发送')
+                    .catch(() => {});
+                  // Fall through to normal sendMessage
+                }
+              }
+
+              // ── Rebuild streaming card after compact_partial / overflow_partial ──
+              // The completed card was consumed; create a new one so post-compaction
+              // tool-call progress remains visible on Feishu (#223).
+              if (
+                streamingCardHandledIM &&
+                (result.sourceKind === 'compact_partial' ||
+                  result.sourceKind === 'overflow_partial')
+              ) {
+                unregisterStreamingSession(streamingSessionJid);
+                streamingAccumulatedText = '';
+                streamingAccumulatedThinking = '';
+                streamingSession = imManager.createStreamingSession(
+                  streamingSessionJid,
+                  makeOnCardCreated(streamingSessionJid),
+                );
+                if (streamingSession) {
+                  registerStreamingSession(
+                    streamingSessionJid,
+                    streamingSession,
+                  );
+                  logger.debug(
+                    { chatJid, sourceKind: result.sourceKind },
+                    'Rebuilt streaming card after partial output',
+                  );
+                }
+              }
+
+              // Skip IM send to the original chatJid when:
+              // 1. Streaming card already handled the IM delivery, OR
+              // 2. Reply route switched to a different IM channel (the routed IM
+              //    path below will deliver to the correct channel instead), OR
+              // 3. Reply route was cleared to null (web message injected into an
+              //    IM-originated session — replies should go to web only).
+              // Any send_message content is delivered independently via IPC watcher.
+              const routeCleared = directImReply && replySourceImJid === null;
+              const routeSwitchedAway =
+                directImReply &&
+                replySourceImJid !== null &&
+                replySourceImJid !== chatJid;
+              const skipImSend =
+                (streamingCardHandledIM && directImReply) ||
+                routeSwitchedAway ||
+                routeCleared;
+              // When the container stays alive and processes multiple IPC messages,
+              // result.turnId stays the same (set at container start).  If we already
+              // saved a reply with this turnId, the INSERT OR REPLACE would overwrite
+              // the previous reply.  Use a fresh ID to prevent that.
+              const effectiveTurnId = result.turnId || lastProcessed.id;
+              const turnIdForDb =
+                sentReply && effectiveTurnId === lastSavedTurnId
+                  ? undefined // no turnId → fresh INSERT, no UPSERT dedup
+                  : effectiveTurnId;
+
+              lastReplyMsgId = await sendMessage(chatJid, text, {
+                sendToIM: directImReply && !skipImSend,
+                localImagePaths,
+                messageMeta: {
+                  turnId: turnIdForDb,
+                  sessionId: result.sessionId || activeSessionId,
+                  sdkMessageUuid: result.sdkMessageUuid,
+                  sourceKind: result.sourceKind || 'sdk_final',
+                  finalizationReason: result.finalizationReason || 'completed',
+                },
+              });
+              lastSavedTurnId = effectiveTurnId;
+
+              // For routed IM (web JID with IM source), only send the FIRST
+              // substantive reply to IM. Subsequent results (e.g., SDK Task
+              // completions) are stored in DB but not spammed to IM.
+              // Streaming card already handles IM delivery for the first reply.
+              if (replySourceImJid && replySourceImJid !== chatJid) {
+                if (!streamingCardHandledIM && !sentReply) {
+                  sendImWithFailTracking(
+                    replySourceImJid,
+                    text,
+                    localImagePaths,
+                  );
+                }
+              }
+
+              // Optional mirror mode for explicitly bound IM channels
+              const webJid = chatJid.startsWith('web:')
+                ? chatJid
+                : `web:${effectiveGroup.folder}`;
+              for (const [imJid, g] of Object.entries(registeredGroups)) {
+                if (
+                  g.target_main_jid !== webJid ||
+                  imJid === chatJid ||
+                  imJid === replySourceImJid
+                )
+                  continue;
+                if (g.reply_policy !== 'mirror') continue;
+                if (getChannelType(imJid))
+                  sendImWithFailTracking(imJid, text, localImagePaths);
+              }
+
+              sentReply = true;
+              // Clear streaming snapshot so the next turn starts fresh.
+              // Without this, saveInterruptedStreamingMessages() would merge
+              // text from multiple turns into one message on shutdown.
+              clearStreamingSnapshot(chatJid);
+              streamingAccumulatedText = '';
+              streamingAccumulatedThinking = '';
+              // Persist cursor as soon as a visible reply is emitted.
+              // Long-lived runners may stay alive for idleTimeout, and waiting
+              // until process exit would cause duplicate replay after restart.
+              commitCursor();
+            }
+            // Only reset idle timer on actual results, not session-update markers (result: null)
+            resetIdleTimer();
+          }
+
+          if (result.status === 'error') {
+            hadError = true;
+            if (result.error) lastError = result.error;
+          }
+        } catch (err) {
+          logger.error({ group: group.name, err }, 'onOutput callback failed');
           hadError = true;
-          if (result.error) lastError = result.error;
         }
-      } catch (err) {
-        logger.error({ group: group.name, err }, 'onOutput callback failed');
-        hadError = true;
-      }
-    },
-    imagesForAgent,
-  );
+      },
+      imagesForAgent,
+    );
   } finally {
     await setTyping(chatJid, false);
     // Always clear ack reaction in finally — covers error/interrupt/abort paths
@@ -2786,11 +2913,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
     // ── 保存中断内容到数据库 + 广播到 Web ──
     // Skip if the shutdown handler already saved this streaming text (prevents duplicates).
-    const webJidForShutdownCheck = chatJid.startsWith('web:') ? chatJid : `web:${effectiveGroup.folder}`;
-    const alreadySavedByShutdown = shutdownSavedJids.has(chatJid) || shutdownSavedJids.has(webJidForShutdownCheck);
+    const webJidForShutdownCheck = chatJid.startsWith('web:')
+      ? chatJid
+      : `web:${effectiveGroup.folder}`;
+    const alreadySavedByShutdown =
+      shutdownSavedJids.has(chatJid) ||
+      shutdownSavedJids.has(webJidForShutdownCheck);
 
     if (wasInterrupted && !alreadySavedByShutdown) {
-      const interruptedText = buildInterruptedReply(streamingAccumulatedText, streamingAccumulatedThinking);
+      const interruptedText = buildInterruptedReply(
+        streamingAccumulatedText,
+        streamingAccumulatedThinking,
+      );
       try {
         // sendToIM: false — 飞书卡片已通过 abort() 展示内容，不重复发送
         lastReplyMsgId = await sendMessage(chatJid, interruptedText, {
@@ -2812,9 +2946,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // ── 兜底：进程异常退出导致累积文本未持久化 ──
     // 使用 buildInterruptedReply 而非 buildOverflowPartialReply：
     // 进程被杀（SIGTERM/错误）后不会自动继续，"上下文压缩中"提示会误导用户。
-    if (!sentReply && !alreadySavedByShutdown && streamingAccumulatedText.trim()) {
+    if (
+      !sentReply &&
+      !alreadySavedByShutdown &&
+      streamingAccumulatedText.trim()
+    ) {
       try {
-        const partialReply = buildInterruptedReply(streamingAccumulatedText, streamingAccumulatedThinking);
+        const partialReply = buildInterruptedReply(
+          streamingAccumulatedText,
+          streamingAccumulatedThinking,
+        );
         lastReplyMsgId = await sendMessage(chatJid, partialReply, {
           sendToIM: false,
           messageMeta: {
@@ -2830,7 +2971,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         logger.warn({ err, chatJid }, 'Failed to save overflow partial text');
       }
     }
-
   }
 
   // runAgent threw — output is undefined, cannot proceed with post-processing.
@@ -2989,9 +3129,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (isOom) {
       const folder = effectiveGroup.folder;
       consecutiveOomExits[folder] = (consecutiveOomExits[folder] || 0) + 1;
-      setRouterState(`oom_exits:${folder}`, String(consecutiveOomExits[folder]));
+      setRouterState(
+        `oom_exits:${folder}`,
+        String(consecutiveOomExits[folder]),
+      );
       logger.warn(
-        { folder, consecutive: consecutiveOomExits[folder], threshold: OOM_AUTO_RESET_THRESHOLD },
+        {
+          folder,
+          consecutive: consecutiveOomExits[folder],
+          threshold: OOM_AUTO_RESET_THRESHOLD,
+        },
         'OOM exit detected (code 137)',
       );
 
@@ -3007,13 +3154,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         try {
           await clearSessionRuntimeFiles(folder);
         } catch (err) {
-          logger.error({ folder, err }, 'Failed to clear session files during OOM auto-reset');
+          logger.error(
+            { folder, err },
+            'Failed to clear session files during OOM auto-reset',
+          );
         }
         try {
           deleteSession(folder);
           delete sessions[folder];
         } catch (err) {
-          logger.error({ folder, err }, 'Failed to clear session during OOM auto-reset');
+          logger.error(
+            { folder, err },
+            'Failed to clear session during OOM auto-reset',
+          );
         }
 
         sendSystemMessage(
@@ -3341,20 +3494,25 @@ async function sendMessage(
       { meta: options.messageMeta },
     );
 
-    broadcastNewMessage(jid, {
-      id: persistedMsgId,
-      chat_jid: jid,
-      sender: 'happyclaw-agent',
-      sender_name: ASSISTANT_NAME,
-      content: text,
-      timestamp,
-      is_from_me: true,
-      turn_id: options.messageMeta?.turnId ?? null,
-      session_id: options.messageMeta?.sessionId ?? null,
-      sdk_message_uuid: options.messageMeta?.sdkMessageUuid ?? null,
-      source_kind: options.messageMeta?.sourceKind ?? null,
-      finalization_reason: options.messageMeta?.finalizationReason ?? null,
-    }, undefined, options.source);
+    broadcastNewMessage(
+      jid,
+      {
+        id: persistedMsgId,
+        chat_jid: jid,
+        sender: 'happyclaw-agent',
+        sender_name: ASSISTANT_NAME,
+        content: text,
+        timestamp,
+        is_from_me: true,
+        turn_id: options.messageMeta?.turnId ?? null,
+        session_id: options.messageMeta?.sessionId ?? null,
+        sdk_message_uuid: options.messageMeta?.sdkMessageUuid ?? null,
+        source_kind: options.messageMeta?.sourceKind ?? null,
+        finalization_reason: options.messageMeta?.finalizationReason ?? null,
+      },
+      undefined,
+      options.source,
+    );
     logger.info({ jid, length: text.length, sendToIM }, 'Message sent');
     // Skip agent_reply broadcast for scheduled tasks to avoid clearing
     // streaming state of a concurrently running main agent.
@@ -3370,12 +3528,17 @@ async function sendMessage(
   }
 }
 
-function buildInterruptedReply(partialText: string, thinkingText?: string): string {
+function buildInterruptedReply(
+  partialText: string,
+  thinkingText?: string,
+): string {
   const trimmed = partialText.trimEnd();
   const trimmedThinking = thinkingText?.trimEnd();
   const parts: string[] = [];
   if (trimmedThinking) {
-    parts.push(`<details>\n<summary>💭 Reasoning (已中断)</summary>\n\n${trimmedThinking}\n\n</details>`);
+    parts.push(
+      `<details>\n<summary>💭 Reasoning (已中断)</summary>\n\n${trimmedThinking}\n\n</details>`,
+    );
   }
   if (trimmed) {
     parts.push(trimmed);
@@ -3486,7 +3649,9 @@ function flushStreamingBuffer(): void {
           fs.unlinkSync(path.join(STREAMING_BUFFER_DIR, f));
         }
       }
-    } catch { /* ignore cleanup errors */ }
+    } catch {
+      /* ignore cleanup errors */
+    }
   } catch (err) {
     logger.debug({ err }, 'Error flushing streaming buffer');
   }
@@ -3497,7 +3662,9 @@ function recoverStreamingBuffer(): void {
   try {
     if (!fs.existsSync(STREAMING_BUFFER_DIR)) return;
 
-    const txtFiles = fs.readdirSync(STREAMING_BUFFER_DIR).filter((f) => f.endsWith('.txt'));
+    const txtFiles = fs
+      .readdirSync(STREAMING_BUFFER_DIR)
+      .filter((f) => f.endsWith('.txt'));
     if (txtFiles.length === 0) return;
 
     logger.info(
@@ -3508,7 +3675,10 @@ function recoverStreamingBuffer(): void {
     for (const filename of txtFiles) {
       try {
         const jid = decodeJidFromFilename(filename);
-        const text = fs.readFileSync(path.join(STREAMING_BUFFER_DIR, filename), 'utf-8');
+        const text = fs.readFileSync(
+          path.join(STREAMING_BUFFER_DIR, filename),
+          'utf-8',
+        );
         if (text.trim()) {
           const interruptedText = buildInterruptedReply(text);
           const msgId = crypto.randomUUID();
@@ -3529,11 +3699,17 @@ function recoverStreamingBuffer(): void {
               },
             },
           );
-          logger.info({ jid, textLen: text.length }, 'Recovered interrupted streaming message');
+          logger.info(
+            { jid, textLen: text.length },
+            'Recovered interrupted streaming message',
+          );
         }
         fs.unlinkSync(path.join(STREAMING_BUFFER_DIR, filename));
       } catch (err) {
-        logger.warn({ err, filename }, 'Error recovering streaming buffer file');
+        logger.warn(
+          { err, filename },
+          'Error recovering streaming buffer file',
+        );
       }
     }
   } catch (err) {
@@ -3548,13 +3724,20 @@ function cleanStreamingBufferDir(): void {
     for (const f of fs.readdirSync(STREAMING_BUFFER_DIR)) {
       try {
         fs.unlinkSync(path.join(STREAMING_BUFFER_DIR, f));
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 function startStreamingBuffer(): void {
-  streamingBufferInterval = setInterval(flushStreamingBuffer, STREAMING_BUFFER_INTERVAL_MS);
+  streamingBufferInterval = setInterval(
+    flushStreamingBuffer,
+    STREAMING_BUFFER_INTERVAL_MS,
+  );
 }
 
 function stopStreamingBuffer(): void {
@@ -3625,8 +3808,7 @@ function startIpcWatcher(): void {
       if (notifyChannels && !notifyChannels.includes(channelType)) continue;
       const target = ownerGroups.find(
         (g) =>
-          getChannelType(g.jid) === channelType &&
-          g.folder === sourceFolder,
+          getChannelType(g.jid) === channelType && g.folder === sourceFolder,
       );
       if (target) {
         sendFn(target.jid);
@@ -3637,397 +3819,426 @@ function startIpcWatcher(): void {
 
   const processGroupIpc = async (sourceGroup: string) => {
     if (shuttingDown) return;
-      // Determine if this IPC directory belongs to an admin home group
-      const sourceGroupEntry = Object.values(registeredGroups).find(
-        (g) => g.folder === sourceGroup,
-      );
-      const isAdminHome = !!(
-        sourceGroupEntry?.is_home && sourceGroup === MAIN_GROUP_FOLDER
-      );
-      const isHome = !!sourceGroupEntry?.is_home;
+    // Determine if this IPC directory belongs to an admin home group
+    const sourceGroupEntry = Object.values(registeredGroups).find(
+      (g) => g.folder === sourceGroup,
+    );
+    const isAdminHome = !!(
+      sourceGroupEntry?.is_home && sourceGroup === MAIN_GROUP_FOLDER
+    );
+    const isHome = !!sourceGroupEntry?.is_home;
 
-      // Collect all IPC roots: main group dir + agents/*/ + tasks-run/*/
-      // Tag agent roots with their agentId so we can route messages to virtual JIDs.
-      const groupIpcRoot = path.join(ipcBaseDir, sourceGroup);
-      const ipcRoots: Array<{ path: string; agentId: string | null; taskId: string | null }> = [
-        { path: groupIpcRoot, agentId: null, taskId: null },
-      ];
-      try {
-        const agentsDir = path.join(groupIpcRoot, 'agents');
-        const agentEntries = await fsp.readdir(agentsDir, {
-          withFileTypes: true,
-        });
-        for (const entry of agentEntries) {
-          if (entry.isDirectory()) {
-            ipcRoots.push({
-              path: path.join(agentsDir, entry.name),
-              agentId: entry.name,
-              taskId: null,
-            });
-          }
+    // Collect all IPC roots: main group dir + agents/*/ + tasks-run/*/
+    // Tag agent roots with their agentId so we can route messages to virtual JIDs.
+    const groupIpcRoot = path.join(ipcBaseDir, sourceGroup);
+    const ipcRoots: Array<{
+      path: string;
+      agentId: string | null;
+      taskId: string | null;
+    }> = [{ path: groupIpcRoot, agentId: null, taskId: null }];
+    try {
+      const agentsDir = path.join(groupIpcRoot, 'agents');
+      const agentEntries = await fsp.readdir(agentsDir, {
+        withFileTypes: true,
+      });
+      for (const entry of agentEntries) {
+        if (entry.isDirectory()) {
+          ipcRoots.push({
+            path: path.join(agentsDir, entry.name),
+            agentId: entry.name,
+            taskId: null,
+          });
         }
-      } catch {
-        /* agents dir may not exist */
       }
-      try {
-        const tasksRunDir = path.join(groupIpcRoot, 'tasks-run');
-        const taskRunEntries = await fsp.readdir(tasksRunDir, {
-          withFileTypes: true,
-        });
-        for (const entry of taskRunEntries) {
-          if (entry.isDirectory()) {
-            ipcRoots.push({
-              path: path.join(tasksRunDir, entry.name),
-              agentId: null,
-              taskId: entry.name,
-            });
-          }
+    } catch {
+      /* agents dir may not exist */
+    }
+    try {
+      const tasksRunDir = path.join(groupIpcRoot, 'tasks-run');
+      const taskRunEntries = await fsp.readdir(tasksRunDir, {
+        withFileTypes: true,
+      });
+      for (const entry of taskRunEntries) {
+        if (entry.isDirectory()) {
+          ipcRoots.push({
+            path: path.join(tasksRunDir, entry.name),
+            agentId: null,
+            taskId: entry.name,
+          });
         }
-      } catch {
-        /* tasks-run dir may not exist */
       }
+    } catch {
+      /* tasks-run dir may not exist */
+    }
 
-      for (const { path: ipcRoot, agentId: ipcAgentId, taskId: ipcTaskId } of ipcRoots) {
-        const messagesDir = path.join(ipcRoot, 'messages');
-        const tasksDir = path.join(ipcRoot, 'tasks');
+    // Pre-resolve owner's home folder once per group (avoid repeated DB queries in the message loop)
+    const ownerHomeFolderForIm = sourceGroupEntry?.created_by
+      ? (getUserHomeGroup(sourceGroupEntry.created_by)?.folder || sourceGroup)
+      : sourceGroup;
 
-        // Process messages from this group's IPC directory
-        try {
-          const messageEntries = await fsp.readdir(messagesDir);
-          const messageFiles = messageEntries.filter((f) =>
-            f.endsWith('.json'),
-          );
-          for (const file of messageFiles) {
-            const filePath = path.join(messagesDir, file);
-            try {
-              const raw = await fsp.readFile(filePath, 'utf-8');
-              const data = JSON.parse(raw);
-              if (data.type === 'message' && data.chatJid && data.text) {
-                const targetGroup = registeredGroups[data.chatJid];
-                if (
-                  canSendCrossGroupMessage(
-                    isAdminHome,
-                    isHome,
+    for (const {
+      path: ipcRoot,
+      agentId: ipcAgentId,
+      taskId: ipcTaskId,
+    } of ipcRoots) {
+      const messagesDir = path.join(ipcRoot, 'messages');
+      const tasksDir = path.join(ipcRoot, 'tasks');
+
+      // Process messages from this group's IPC directory
+      try {
+        const messageEntries = await fsp.readdir(messagesDir);
+        const messageFiles = messageEntries.filter((f) => f.endsWith('.json'));
+        for (const file of messageFiles) {
+          const filePath = path.join(messagesDir, file);
+          try {
+            const raw = await fsp.readFile(filePath, 'utf-8');
+            const data = JSON.parse(raw);
+            if (data.type === 'message' && data.chatJid && data.text) {
+              const targetGroup = registeredGroups[data.chatJid];
+              if (
+                canSendCrossGroupMessage(
+                  isAdminHome,
+                  isHome,
+                  sourceGroup,
+                  sourceGroupEntry,
+                  targetGroup,
+                )
+              ) {
+                // Conversation agents: route to virtual JID so message appears
+                // in the agent tab, not the main conversation.
+                const effectiveChatJid = ipcAgentId
+                  ? `${data.chatJid}#agent:${ipcAgentId}`
+                  : data.chatJid;
+                // Feishu card JSON: store extracted markdown for web, send raw JSON to IM
+                const cardText = extractFeishuCardText(data.text);
+                const webText = cardText || data.text;
+                await sendMessage(effectiveChatJid, webText, {
+                  messageMeta: {
+                    sourceKind: 'sdk_send_message',
+                  },
+                });
+
+                // Forward to IM channel — but NOT for conversation agent messages.
+                // Conversation agents handle their own IM routing in
+                // processAgentConversation's wrappedOnOutput callback.
+                if (!ipcAgentId) {
+                  const ipcImRoute = activeImReplyRoutes.get(sourceGroup);
+                  if (
+                    ipcImRoute &&
+                    getChannelType(data.chatJid) === null &&
+                    ipcImRoute !== data.chatJid
+                  ) {
+                    const localImages = extractLocalImImagePaths(
+                      data.text,
+                      sourceGroup,
+                    );
+                    sendImWithFailTracking(ipcImRoute, data.text, localImages);
+                  }
+
+                  // Scheduled task: broadcast to all connected IM channels of the owner
+                  if (data.isScheduledTask && sourceGroupEntry?.created_by) {
+                    const alreadySent = new Set<string>(
+                      [data.chatJid, ipcImRoute].filter(Boolean) as string[],
+                    );
+                    const taskLocalImages = extractLocalImImagePaths(
+                      data.text,
+                      sourceGroup,
+                    );
+                    // Resolve notify_channels from the task
+                    let taskNotifyChannels: string[] | null | undefined;
+                    if (ipcTaskId) {
+                      const taskRecord = getTaskById(ipcTaskId);
+                      taskNotifyChannels = taskRecord?.notify_channels;
+                    }
+                    broadcastToOwnerIMChannels(
+                      sourceGroupEntry.created_by,
+                      ownerHomeFolderForIm,
+                      alreadySent,
+                      (jid) =>
+                        sendImWithFailTracking(jid, data.text, taskLocalImages),
+                      taskNotifyChannels,
+                    );
+                  }
+                }
+                logger.info(
+                  {
+                    chatJid: effectiveChatJid,
                     sourceGroup,
-                    sourceGroupEntry,
-                    targetGroup,
-                  )
-                ) {
-                  // Conversation agents: route to virtual JID so message appears
-                  // in the agent tab, not the main conversation.
-                  const effectiveChatJid = ipcAgentId
+                    agentId: ipcAgentId,
+                  },
+                  'IPC message sent',
+                );
+              } else {
+                logger.warn(
+                  { chatJid: data.chatJid, sourceGroup },
+                  'Unauthorized IPC message attempt blocked',
+                );
+              }
+            } else if (
+              data.type === 'image' &&
+              data.chatJid &&
+              data.imageBase64
+            ) {
+              // Handle image IPC messages from send_image MCP tool
+              const targetGroup = registeredGroups[data.chatJid];
+              if (
+                canSendCrossGroupMessage(
+                  isAdminHome,
+                  isHome,
+                  sourceGroup,
+                  sourceGroupEntry,
+                  targetGroup,
+                )
+              ) {
+                try {
+                  const imageBuffer = Buffer.from(data.imageBase64, 'base64');
+                  const mimeType = data.mimeType || 'image/png';
+                  const caption = data.caption || undefined;
+                  const fileName = data.fileName || undefined;
+
+                  // Conversation agents: skip IM forwarding (handled in wrappedOnOutput).
+                  // Non-agent: route to IM via activeImReplyRoutes.
+                  const imgImRoute = ipcAgentId
+                    ? null
+                    : getChannelType(data.chatJid) !== null
+                      ? data.chatJid
+                      : (activeImReplyRoutes.get(sourceGroup) ?? null);
+                  if (imgImRoute) {
+                    await retryImOperation('send_image', imgImRoute, () =>
+                      imManager.sendImage(
+                        imgImRoute,
+                        imageBuffer,
+                        mimeType,
+                        caption,
+                        fileName,
+                      ),
+                    );
+                  }
+
+                  // Conversation agents: store in virtual JID (agent tab).
+                  const imgChatJid = ipcAgentId
                     ? `${data.chatJid}#agent:${ipcAgentId}`
                     : data.chatJid;
-                  await sendMessage(effectiveChatJid, data.text, {
-                    messageMeta: {
-                      sourceKind: 'sdk_send_message',
-                    },
+
+                  // Persist image message to DB and broadcast to WebSocket (same as sendMessage flow)
+                  const displayText = caption
+                    ? `[图片: ${fileName || 'image'}]\n${caption}`
+                    : `[图片: ${fileName || 'image'}]`;
+                  const imgMsgId = crypto.randomUUID();
+                  const imgTimestamp = new Date().toISOString();
+                  ensureChatExists(imgChatJid);
+                  const persistedImgMsgId = storeMessageDirect(
+                    imgMsgId,
+                    imgChatJid,
+                    'happyclaw-agent',
+                    ASSISTANT_NAME,
+                    displayText,
+                    imgTimestamp,
+                    true,
+                    { meta: { sourceKind: 'sdk_send_message' } },
+                  );
+                  broadcastNewMessage(imgChatJid, {
+                    id: persistedImgMsgId,
+                    chat_jid: imgChatJid,
+                    sender: 'happyclaw-agent',
+                    sender_name: ASSISTANT_NAME,
+                    content: displayText,
+                    timestamp: imgTimestamp,
+                    is_from_me: true,
+                    turn_id: null,
+                    session_id: null,
+                    sdk_message_uuid: null,
+                    source_kind: 'sdk_send_message',
+                    finalization_reason: null,
                   });
+                  broadcastToWebClients(imgChatJid, displayText);
 
-                  // Forward to IM channel — but NOT for conversation agent messages.
-                  // Conversation agents handle their own IM routing in
-                  // processAgentConversation's wrappedOnOutput callback.
-                  if (!ipcAgentId) {
-                    const ipcImRoute = activeImReplyRoutes.get(sourceGroup);
-                    if (
-                      ipcImRoute &&
-                      getChannelType(data.chatJid) === null &&
-                      ipcImRoute !== data.chatJid
-                    ) {
-                      const localImages = extractLocalImImagePaths(
-                        data.text,
-                        sourceGroup,
-                      );
-                      sendImWithFailTracking(ipcImRoute, data.text, localImages);
-                    }
-
-                    // Scheduled task: broadcast to all connected IM channels of the owner
-                    if (data.isScheduledTask && sourceGroupEntry?.created_by) {
-                      const alreadySent = new Set<string>(
-                        [data.chatJid, ipcImRoute].filter(Boolean) as string[],
-                      );
-                      const taskLocalImages = extractLocalImImagePaths(
-                        data.text,
-                        sourceGroup,
-                      );
-                      // Resolve notify_channels from the task
-                      let taskNotifyChannels: string[] | null | undefined;
-                      if (ipcTaskId) {
-                        const taskRecord = getTaskById(ipcTaskId);
-                        taskNotifyChannels = taskRecord?.notify_channels;
-                      }
-                      broadcastToOwnerIMChannels(
-                        sourceGroupEntry.created_by,
-                        sourceGroup,
-                        alreadySent,
-                        (jid) =>
-                          sendImWithFailTracking(jid, data.text, taskLocalImages),
-                        taskNotifyChannels,
-                      );
-                    }
-                  }
-                  logger.info(
-                    { chatJid: effectiveChatJid, sourceGroup, agentId: ipcAgentId },
-                    'IPC message sent',
-                  );
-                } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC message attempt blocked',
-                  );
-                }
-              } else if (
-                data.type === 'image' &&
-                data.chatJid &&
-                data.imageBase64
-              ) {
-                // Handle image IPC messages from send_image MCP tool
-                const targetGroup = registeredGroups[data.chatJid];
-                if (
-                  canSendCrossGroupMessage(
-                    isAdminHome,
-                    isHome,
-                    sourceGroup,
-                    sourceGroupEntry,
-                    targetGroup,
-                  )
-                ) {
-                  try {
-                    const imageBuffer = Buffer.from(
-                      data.imageBase64,
-                      'base64',
+                  // Scheduled task: broadcast image to all connected IM channels
+                  // (not applicable for agent IPC)
+                  if (
+                    !ipcAgentId &&
+                    data.isScheduledTask &&
+                    sourceGroupEntry?.created_by
+                  ) {
+                    const alreadySent = new Set<string>(
+                      [data.chatJid, imgImRoute].filter(Boolean) as string[],
                     );
-                    const mimeType = data.mimeType || 'image/png';
-                    const caption = data.caption || undefined;
-                    const fileName = data.fileName || undefined;
-
-                    // Conversation agents: skip IM forwarding (handled in wrappedOnOutput).
-                    // Non-agent: route to IM via activeImReplyRoutes.
-                    const imgImRoute = ipcAgentId
-                      ? null
-                      : getChannelType(data.chatJid) !== null
-                        ? data.chatJid
-                        : activeImReplyRoutes.get(sourceGroup) ?? null;
-                    if (imgImRoute) {
-                      await retryImOperation('send_image', imgImRoute, () =>
-                        imManager.sendImage(imgImRoute, imageBuffer, mimeType, caption, fileName),
-                      );
+                    let imgTaskNotifyChannels: string[] | null | undefined;
+                    if (ipcTaskId) {
+                      const imgTaskRecord = getTaskById(ipcTaskId);
+                      imgTaskNotifyChannels = imgTaskRecord?.notify_channels;
                     }
-
-                    // Conversation agents: store in virtual JID (agent tab).
-                    const imgChatJid = ipcAgentId
-                      ? `${data.chatJid}#agent:${ipcAgentId}`
-                      : data.chatJid;
-
-                    // Persist image message to DB and broadcast to WebSocket (same as sendMessage flow)
-                    const displayText = caption
-                      ? `[图片: ${fileName || 'image'}]\n${caption}`
-                      : `[图片: ${fileName || 'image'}]`;
-                    const imgMsgId = crypto.randomUUID();
-                    const imgTimestamp = new Date().toISOString();
-                    ensureChatExists(imgChatJid);
-                    const persistedImgMsgId = storeMessageDirect(
-                      imgMsgId,
-                      imgChatJid,
-                      'happyclaw-agent',
-                      ASSISTANT_NAME,
-                      displayText,
-                      imgTimestamp,
-                      true,
-                      { meta: { sourceKind: 'sdk_send_message' } },
-                    );
-                    broadcastNewMessage(imgChatJid, {
-                      id: persistedImgMsgId,
-                      chat_jid: imgChatJid,
-                      sender: 'happyclaw-agent',
-                      sender_name: ASSISTANT_NAME,
-                      content: displayText,
-                      timestamp: imgTimestamp,
-                      is_from_me: true,
-                      turn_id: null,
-                      session_id: null,
-                      sdk_message_uuid: null,
-                      source_kind: 'sdk_send_message',
-                      finalization_reason: null,
-                    });
-                    broadcastToWebClients(imgChatJid, displayText);
-
-                    // Scheduled task: broadcast image to all connected IM channels
-                    // (not applicable for agent IPC)
-                    if (!ipcAgentId && data.isScheduledTask && sourceGroupEntry?.created_by) {
-                      const alreadySent = new Set<string>(
-                        [data.chatJid, imgImRoute].filter(Boolean) as string[],
-                      );
-                      let imgTaskNotifyChannels: string[] | null | undefined;
-                      if (ipcTaskId) {
-                        const imgTaskRecord = getTaskById(ipcTaskId);
-                        imgTaskNotifyChannels = imgTaskRecord?.notify_channels;
-                      }
-                      broadcastToOwnerIMChannels(
-                        sourceGroupEntry.created_by,
-                        sourceGroup,
-                        alreadySent,
-                        (jid) =>
-                          imManager
-                            .sendImage(jid, imageBuffer, mimeType, caption, fileName)
-                            .catch((err) =>
-                              logger.warn(
-                                { jid, err },
-                                'Failed to broadcast task image to IM',
-                              ),
+                    broadcastToOwnerIMChannels(
+                      sourceGroupEntry.created_by,
+                      ownerHomeFolderForIm,
+                      alreadySent,
+                      (jid) =>
+                        imManager
+                          .sendImage(
+                            jid,
+                            imageBuffer,
+                            mimeType,
+                            caption,
+                            fileName,
+                          )
+                          .catch((err) =>
+                            logger.warn(
+                              { jid, err },
+                              'Failed to broadcast task image to IM',
                             ),
-                        imgTaskNotifyChannels,
-                      );
-                    }
-
-                    logger.info(
-                      {
-                        chatJid: imgChatJid,
-                        sourceGroup,
-                        mimeType,
-                        size: imageBuffer.length,
-                        agentId: ipcAgentId,
-                      },
-                      'IPC image sent',
-                    );
-                  } catch (err) {
-                    logger.error(
-                      { chatJid: data.chatJid, sourceGroup, err },
-                      'Failed to process IPC image',
+                          ),
+                      imgTaskNotifyChannels,
                     );
                   }
-                } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC image attempt blocked',
+
+                  logger.info(
+                    {
+                      chatJid: imgChatJid,
+                      sourceGroup,
+                      mimeType,
+                      size: imageBuffer.length,
+                      agentId: ipcAgentId,
+                    },
+                    'IPC image sent',
+                  );
+                } catch (err) {
+                  logger.error(
+                    { chatJid: data.chatJid, sourceGroup, err },
+                    'Failed to process IPC image',
                   );
                 }
-              }
-              await fsp.unlink(filePath);
-            } catch (err) {
-              logger.error(
-                { file, sourceGroup, err },
-                'Error processing IPC message',
-              );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              await fsp.mkdir(errorDir, { recursive: true });
-              try {
-                await fsp.rename(
-                  filePath,
-                  path.join(errorDir, `${sourceGroup}-${file}`),
+              } else {
+                logger.warn(
+                  { chatJid: data.chatJid, sourceGroup },
+                  'Unauthorized IPC image attempt blocked',
                 );
-              } catch (renameErr) {
-                logger.error(
-                  { file, sourceGroup, renameErr },
-                  'Failed to move IPC message to error directory, deleting',
-                );
-                try {
-                  await fsp.unlink(filePath);
-                } catch {
-                  /* ignore */
-                }
               }
             }
-          }
-        } catch (err: any) {
-          if (err?.code !== 'ENOENT') {
+            await fsp.unlink(filePath);
+          } catch (err) {
             logger.error(
-              { err, sourceGroup },
-              'Error reading IPC messages directory',
+              { file, sourceGroup, err },
+              'Error processing IPC message',
             );
-          }
-        }
-
-        // Process tasks from this group's IPC directory
-        try {
-          const allEntries = await fsp.readdir(tasksDir, {
-            withFileTypes: true,
-          });
-
-          // 清理孤儿结果文件（容器崩溃或超时后残留，超过 10 分钟自动删除）
-          for (const entry of allEntries) {
-            if (
-              entry.isFile() &&
-              entry.name.endsWith('.json') &&
-              (entry.name.startsWith('install_skill_result_') ||
-                entry.name.startsWith('uninstall_skill_result_') ||
-                entry.name.startsWith('list_tasks_result_'))
-            ) {
+            const errorDir = path.join(ipcBaseDir, 'errors');
+            await fsp.mkdir(errorDir, { recursive: true });
+            try {
+              await fsp.rename(
+                filePath,
+                path.join(errorDir, `${sourceGroup}-${file}`),
+              );
+            } catch (renameErr) {
+              logger.error(
+                { file, sourceGroup, renameErr },
+                'Failed to move IPC message to error directory, deleting',
+              );
               try {
-                const filePath = path.join(tasksDir, entry.name);
-                const stat = await fsp.stat(filePath);
-                if (Date.now() - stat.mtimeMs > 10 * 60 * 1000) {
-                  await fsp.unlink(filePath);
-                  logger.debug(
-                    { sourceGroup, file: entry.name },
-                    'Cleaned up stale skill result file',
-                  );
-                }
+                await fsp.unlink(filePath);
               } catch {
                 /* ignore */
               }
             }
           }
+        }
+      } catch (err: any) {
+        if (err?.code !== 'ENOENT') {
+          logger.error(
+            { err, sourceGroup },
+            'Error reading IPC messages directory',
+          );
+        }
+      }
 
-          const taskFiles = allEntries
-            .filter(
-              (entry) =>
-                entry.isFile() &&
-                entry.name.endsWith('.json') &&
-                !entry.name.startsWith('install_skill_result_') &&
-                !entry.name.startsWith('uninstall_skill_result_') &&
-                !entry.name.startsWith('list_tasks_result_'),
-            )
-            .map((entry) => entry.name);
-          for (const file of taskFiles) {
-            const filePath = path.join(tasksDir, file);
+      // Process tasks from this group's IPC directory
+      try {
+        const allEntries = await fsp.readdir(tasksDir, {
+          withFileTypes: true,
+        });
+
+        // 清理孤儿结果文件（容器崩溃或超时后残留，超过 10 分钟自动删除）
+        for (const entry of allEntries) {
+          if (
+            entry.isFile() &&
+            entry.name.endsWith('.json') &&
+            (entry.name.startsWith('install_skill_result_') ||
+              entry.name.startsWith('uninstall_skill_result_') ||
+              entry.name.startsWith('list_tasks_result_'))
+          ) {
             try {
-              const raw = await fsp.readFile(filePath, 'utf-8');
-              const data = JSON.parse(raw);
-              // Pass source group identity to processTaskIpc for authorization
-              await processTaskIpc(
-                data,
-                sourceGroup,
-                isAdminHome,
-                isHome,
-                sourceGroupEntry,
-                ipcAgentId,
+              const filePath = path.join(tasksDir, entry.name);
+              const stat = await fsp.stat(filePath);
+              if (Date.now() - stat.mtimeMs > 10 * 60 * 1000) {
+                await fsp.unlink(filePath);
+                logger.debug(
+                  { sourceGroup, file: entry.name },
+                  'Cleaned up stale skill result file',
+                );
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+
+        const taskFiles = allEntries
+          .filter(
+            (entry) =>
+              entry.isFile() &&
+              entry.name.endsWith('.json') &&
+              !entry.name.startsWith('install_skill_result_') &&
+              !entry.name.startsWith('uninstall_skill_result_') &&
+              !entry.name.startsWith('list_tasks_result_'),
+          )
+          .map((entry) => entry.name);
+        for (const file of taskFiles) {
+          const filePath = path.join(tasksDir, file);
+          try {
+            const raw = await fsp.readFile(filePath, 'utf-8');
+            const data = JSON.parse(raw);
+            // Pass source group identity to processTaskIpc for authorization
+            await processTaskIpc(
+              data,
+              sourceGroup,
+              isAdminHome,
+              isHome,
+              sourceGroupEntry,
+              ipcAgentId,
+            );
+            await fsp.unlink(filePath);
+          } catch (err) {
+            logger.error(
+              { file, sourceGroup, err },
+              'Error processing IPC task',
+            );
+            const errorDir = path.join(ipcBaseDir, 'errors');
+            await fsp.mkdir(errorDir, { recursive: true });
+            try {
+              await fsp.rename(
+                filePath,
+                path.join(errorDir, `${sourceGroup}-${file}`),
               );
-              await fsp.unlink(filePath);
-            } catch (err) {
+            } catch (renameErr) {
               logger.error(
-                { file, sourceGroup, err },
-                'Error processing IPC task',
+                { file, sourceGroup, renameErr },
+                'Failed to move IPC task to error directory, deleting',
               );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              await fsp.mkdir(errorDir, { recursive: true });
               try {
-                await fsp.rename(
-                  filePath,
-                  path.join(errorDir, `${sourceGroup}-${file}`),
-                );
-              } catch (renameErr) {
-                logger.error(
-                  { file, sourceGroup, renameErr },
-                  'Failed to move IPC task to error directory, deleting',
-                );
-                try {
-                  await fsp.unlink(filePath);
-                } catch {
-                  /* ignore */
-                }
+                await fsp.unlink(filePath);
+              } catch {
+                /* ignore */
               }
             }
           }
-        } catch (err: any) {
-          if (err?.code !== 'ENOENT') {
-            logger.error(
-              { err, sourceGroup },
-              'Error reading IPC tasks directory',
-            );
-          }
         }
-      } // end for (const ipcRoot of ipcRoots)
+      } catch (err: any) {
+        if (err?.code !== 'ENOENT') {
+          logger.error(
+            { err, sourceGroup },
+            'Error reading IPC tasks directory',
+          );
+        }
+      }
+    } // end for (const ipcRoot of ipcRoots)
   };
 
   const processIpcFilesFull = async () => {
@@ -4073,6 +4284,7 @@ async function processTaskIpc(
     schedule_value?: string;
     context_mode?: string;
     execution_type?: string;
+    execution_mode?: string;
     script_command?: string;
     groupFolder?: string;
     chatJid?: string;
@@ -4192,6 +4404,10 @@ async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
+        const executionMode =
+          data.execution_mode === 'host' || data.execution_mode === 'container'
+            ? data.execution_mode
+            : null;
         createTask({
           id: taskId,
           group_folder: targetFolder,
@@ -4201,10 +4417,13 @@ async function processTaskIpc(
           schedule_value: data.schedule_value,
           context_mode: contextMode,
           execution_type: execType,
+          execution_mode: executionMode,
           script_command: data.script_command ?? null,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
+          created_by: sourceGroupEntry?.created_by,
+          notify_channels: null,
         });
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode, execType },
@@ -4321,10 +4540,7 @@ async function processTaskIpc(
           const tmpPath = `${resultFilePath}.tmp`;
           fs.writeFileSync(tmpPath, errorResult);
           fs.renameSync(tmpPath, resultFilePath);
-          logger.error(
-            { sourceGroup, err },
-            'Failed to list tasks via IPC',
-          );
+          logger.error({ sourceGroup, err }, 'Failed to list tasks via IPC');
         }
       }
       break;
@@ -4565,7 +4781,7 @@ async function processTaskIpc(
             ? null
             : getChannelType(data.chatJid) !== null
               ? data.chatJid
-              : activeImReplyRoutes.get(sourceGroup) ?? null;
+              : (activeImReplyRoutes.get(sourceGroup) ?? null);
           if (fileImRoute) {
             const imFileName = data.fileName || path.basename(resolvedPath);
             await retryImOperation('send_file', fileImRoute, () =>
@@ -4578,7 +4794,12 @@ async function processTaskIpc(
             );
           }
           logger.info(
-            { sourceGroup, chatJid: data.chatJid, fileName: data.fileName, imRoute: fileImRoute },
+            {
+              sourceGroup,
+              chatJid: data.chatJid,
+              fileName: data.fileName,
+              imRoute: fileImRoute,
+            },
             'File sent via IPC',
           );
         } catch (err) {
@@ -4635,8 +4856,18 @@ async function processAgentConversation(
     // or cursor already advanced), mark as error so they don't stay idle forever.
     if (agent.kind === 'spawn' && agent.status === 'idle') {
       updateAgentStatus(agentId, 'error', '未找到待处理消息');
-      broadcastAgentStatus(chatJid, agentId, 'error', agent.name, agent.prompt, '未找到待处理消息');
-      logger.warn({ chatJid, agentId }, 'Spawn agent had no pending messages, marked as error');
+      broadcastAgentStatus(
+        chatJid,
+        agentId,
+        'error',
+        agent.name,
+        agent.prompt,
+        '未找到待处理消息',
+      );
+      logger.warn(
+        { chatJid, agentId },
+        'Spawn agent had no pending messages, marked as error',
+      );
     }
     return;
   }
@@ -4700,9 +4931,8 @@ async function processAgentConversation(
     ? `${replySourceImJid}#agent:${agentId}`
     : undefined;
   let agentStreamingSession = replySourceImJid
-    ? imManager.createStreamingSession(
-        replySourceImJid,
-        (messageId) => registerMessageIdMapping(messageId, streamingSessionJid!),
+    ? imManager.createStreamingSession(replySourceImJid, (messageId) =>
+        registerMessageIdMapping(messageId, streamingSessionJid!),
       )
     : undefined;
   let agentStreamingAccText = '';
@@ -4736,7 +4966,10 @@ async function processAgentConversation(
   const lastProcessed = missedMessages[missedMessages.length - 1];
   const commitCursor = (): void => {
     if (cursorCommitted) return;
-    advanceCursors(virtualChatJid, { timestamp: lastProcessed.timestamp, id: lastProcessed.id });
+    advanceCursors(virtualChatJid, {
+      timestamp: lastProcessed.timestamp,
+      id: lastProcessed.id,
+    });
     cursorCommitted = true;
   };
 
@@ -4756,13 +4989,20 @@ async function processAgentConversation(
       broadcastStreamEvent(chatJid, output.streamEvent, agentId);
 
       // ── 累积 text_delta 文本（中断时用于保存已输出内容）──
-      if (output.streamEvent.eventType === 'text_delta' && output.streamEvent.text) {
+      if (
+        output.streamEvent.eventType === 'text_delta' &&
+        output.streamEvent.text
+      ) {
         agentStreamingAccText += output.streamEvent.text;
       }
 
       // ── Feed stream events into Feishu streaming card ──
       if (agentStreamingSession) {
-        feedStreamEventToCard(agentStreamingSession, output.streamEvent, agentStreamingAccText);
+        feedStreamEventToCard(
+          agentStreamingSession,
+          output.streamEvent,
+          agentStreamingAccText,
+        );
       }
 
       // ── 中断时立即保存已输出内容 ──
@@ -4791,25 +5031,38 @@ async function processAgentConversation(
               {
                 meta: {
                   turnId: output.streamEvent.turnId || lastProcessed.id,
-                  sessionId: output.streamEvent.sessionId || currentAgentSessionId,
+                  sessionId:
+                    output.streamEvent.sessionId || currentAgentSessionId,
                   sourceKind: 'interrupt_partial',
                   finalizationReason: 'interrupted',
                 },
               },
             );
-            broadcastNewMessage(virtualChatJid, {
-              id: persistedMsgId, chat_jid: virtualChatJid,
-              sender: 'happyclaw-agent', sender_name: ASSISTANT_NAME,
-              content: interruptedText, timestamp, is_from_me: true,
-              turn_id: output.streamEvent.turnId || lastProcessed.id,
-              session_id: output.streamEvent.sessionId || currentAgentSessionId,
-              sdk_message_uuid: null,
-              source_kind: 'interrupt_partial',
-              finalization_reason: 'interrupted',
-            }, agentId);
+            broadcastNewMessage(
+              virtualChatJid,
+              {
+                id: persistedMsgId,
+                chat_jid: virtualChatJid,
+                sender: 'happyclaw-agent',
+                sender_name: ASSISTANT_NAME,
+                content: interruptedText,
+                timestamp,
+                is_from_me: true,
+                turn_id: output.streamEvent.turnId || lastProcessed.id,
+                session_id:
+                  output.streamEvent.sessionId || currentAgentSessionId,
+                sdk_message_uuid: null,
+                source_kind: 'interrupt_partial',
+                finalization_reason: 'interrupted',
+              },
+              agentId,
+            );
             commitCursor();
           } catch (err) {
-            logger.warn({ err, chatJid, agentId }, 'Failed to save interrupted agent text on status event');
+            logger.warn(
+              { err, chatJid, agentId },
+              'Failed to save interrupted agent text on status event',
+            );
           }
         }
       }
@@ -4829,9 +5082,10 @@ async function processAgentConversation(
           // Write to usage_records + usage_daily_summary
           // Sub-Agent 的 effectiveGroup 可能没有 created_by，从父群组继承
           writeUsageRecords({
-            userId: effectiveGroup.created_by
-              || registeredGroups[chatJid]?.created_by
-              || 'system',
+            userId:
+              effectiveGroup.created_by ||
+              registeredGroups[chatJid]?.created_by ||
+              'system',
             groupFolder: effectiveGroup.folder,
             agentId,
             messageId: lastAgentReplyMsgId,
@@ -4858,7 +5112,10 @@ async function processAgentConversation(
           ? output.result
           : JSON.stringify(output.result);
       let text = stripAgentInternalTags(raw);
-      if (output.sourceKind === 'overflow_partial' || output.sourceKind === 'compact_partial') {
+      if (
+        output.sourceKind === 'overflow_partial' ||
+        output.sourceKind === 'compact_partial'
+      ) {
         // Spawn agents are fire-and-forget: context compression is an internal
         // detail. Don't append the "上下文压缩中" suffix — it confuses users
         // seeing the Feishu card suddenly change to a warning.
@@ -4869,7 +5126,10 @@ async function processAgentConversation(
       // Suppress system-maintenance noise from auto_continue outputs (issue #275).
       // Short acknowledgements ("OK", "已更新 CLAUDE.md") that leak from the
       // compaction pipeline are dropped; substantive continuations pass through.
-      if (output.sourceKind === 'auto_continue' && isSystemMaintenanceNoise(text)) {
+      if (
+        output.sourceKind === 'auto_continue' &&
+        isSystemMaintenanceNoise(text)
+      ) {
         logger.info(
           { chatJid, agentId, textLen: text.length },
           'auto_continue output suppressed (system maintenance noise)',
@@ -4936,7 +5196,9 @@ async function processAgentConversation(
               { err, chatJid, agentId },
               'Agent streaming card complete failed, falling back to static message',
             );
-            await agentStreamingSession.abort('回复已通过消息发送').catch(() => {});
+            await agentStreamingSession
+              .abort('回复已通过消息发送')
+              .catch(() => {});
           }
         }
 
@@ -4945,17 +5207,22 @@ async function processAgentConversation(
         // tool-call progress remains visible on Feishu (#223).
         if (
           streamingCardHandledIM &&
-          (output.sourceKind === 'compact_partial' || output.sourceKind === 'overflow_partial') &&
+          (output.sourceKind === 'compact_partial' ||
+            output.sourceKind === 'overflow_partial') &&
           streamingSessionJid
         ) {
           agentStreamingAccText = '';
           unregisterStreamingSession(streamingSessionJid);
           agentStreamingSession = imManager.createStreamingSession(
             replySourceImJid!,
-            (messageId) => registerMessageIdMapping(messageId, streamingSessionJid!),
+            (messageId) =>
+              registerMessageIdMapping(messageId, streamingSessionJid!),
           );
           if (agentStreamingSession) {
-            registerStreamingSession(streamingSessionJid, agentStreamingSession);
+            registerStreamingSession(
+              streamingSessionJid,
+              agentStreamingSession,
+            );
             logger.debug(
               { chatJid, agentId, sourceKind: output.sourceKind },
               'Rebuilt streaming card after partial output',
@@ -4966,15 +5233,30 @@ async function processAgentConversation(
         if (replySourceImJid && !streamingCardHandledIM && isFirstReply) {
           // Only send the FIRST substantive reply to IM. Subsequent results
           // (SDK Task completions) are stored in DB but not spammed to IM.
-          const imSent = await sendImWithRetry(replySourceImJid, text, localImagePaths);
+          const imSent = await sendImWithRetry(
+            replySourceImJid,
+            text,
+            localImagePaths,
+          );
           if (imSent) {
             logger.info(
-              { chatJid, agentId, replySourceImJid, sourceKind: output.sourceKind, textLen: text.length },
+              {
+                chatJid,
+                agentId,
+                replySourceImJid,
+                sourceKind: output.sourceKind,
+                textLen: text.length,
+              },
               'Agent conversation: static IM message sent',
             );
           } else {
             logger.error(
-              { chatJid, agentId, replySourceImJid, sourceKind: output.sourceKind },
+              {
+                chatJid,
+                agentId,
+                replySourceImJid,
+                sourceKind: output.sourceKind,
+              },
               'Agent conversation: IM send failed after all retries, message lost',
             );
           }
@@ -5002,11 +5284,15 @@ async function processAgentConversation(
         // compression outputs, not the final result; closing now would kill the agent
         // before it finishes the actual task.
         if (
-          agent.kind === 'spawn' && text &&
+          agent.kind === 'spawn' &&
+          text &&
           output.sourceKind !== 'overflow_partial' &&
           output.sourceKind !== 'compact_partial'
         ) {
-          logger.info({ agentId, chatJid }, 'Spawn agent replied, sending close signal');
+          logger.info(
+            { agentId, chatJid },
+            'Spawn agent replied, sending close signal',
+          );
           queue.closeStdin(virtualChatJid);
         }
       }
@@ -5183,19 +5469,30 @@ async function processAgentConversation(
             },
           },
         );
-        broadcastNewMessage(virtualChatJid, {
-          id: persistedMsgId, chat_jid: virtualChatJid,
-          sender: 'happyclaw-agent', sender_name: ASSISTANT_NAME,
-          content: interruptedText, timestamp, is_from_me: true,
-          turn_id: lastProcessed.id,
-          session_id: currentAgentSessionId,
-          sdk_message_uuid: null,
-          source_kind: 'interrupt_partial',
-          finalization_reason: 'interrupted',
-        }, agentId);
+        broadcastNewMessage(
+          virtualChatJid,
+          {
+            id: persistedMsgId,
+            chat_jid: virtualChatJid,
+            sender: 'happyclaw-agent',
+            sender_name: ASSISTANT_NAME,
+            content: interruptedText,
+            timestamp,
+            is_from_me: true,
+            turn_id: lastProcessed.id,
+            session_id: currentAgentSessionId,
+            sdk_message_uuid: null,
+            source_kind: 'interrupt_partial',
+            finalization_reason: 'interrupted',
+          },
+          agentId,
+        );
         commitCursor();
       } catch (err) {
-        logger.warn({ err, chatJid, agentId }, 'Failed to save interrupted agent text');
+        logger.warn(
+          { err, chatJid, agentId },
+          'Failed to save interrupted agent text',
+        );
       }
     }
 
@@ -5223,24 +5520,39 @@ async function processAgentConversation(
             },
           },
         );
-        broadcastNewMessage(virtualChatJid, {
-          id: persistedMsgId, chat_jid: virtualChatJid,
-          sender: 'happyclaw-agent', sender_name: ASSISTANT_NAME,
-          content: partialReply, timestamp, is_from_me: true,
-          turn_id: lastProcessed.id,
-          session_id: currentAgentSessionId,
-          sdk_message_uuid: null,
-          source_kind: 'interrupt_partial',
-          finalization_reason: 'error',
-        }, agentId);
+        broadcastNewMessage(
+          virtualChatJid,
+          {
+            id: persistedMsgId,
+            chat_jid: virtualChatJid,
+            sender: 'happyclaw-agent',
+            sender_name: ASSISTANT_NAME,
+            content: partialReply,
+            timestamp,
+            is_from_me: true,
+            turn_id: lastProcessed.id,
+            session_id: currentAgentSessionId,
+            sdk_message_uuid: null,
+            source_kind: 'interrupt_partial',
+            finalization_reason: 'error',
+          },
+          agentId,
+        );
         commitCursor();
       } catch (err) {
-        logger.warn({ err, chatJid, agentId }, 'Failed to save interrupted partial agent text');
+        logger.warn(
+          { err, chatJid, agentId },
+          'Failed to save interrupted partial agent text',
+        );
       }
     }
 
     // ── Spawn result injection: write final output back to the source chat ──
-    if (agent.kind === 'spawn' && agent.spawned_from_jid && lastAgentReplyText) {
+    if (
+      agent.kind === 'spawn' &&
+      agent.spawned_from_jid &&
+      lastAgentReplyText
+    ) {
       try {
         const resultText = lastAgentReplyText;
         const injectId = crypto.randomUUID();
@@ -5265,11 +5577,18 @@ async function processAgentConversation(
           is_from_me: true,
         });
         logger.info(
-          { agentId, spawned_from_jid: agent.spawned_from_jid, textLen: lastAgentReplyText.length },
+          {
+            agentId,
+            spawned_from_jid: agent.spawned_from_jid,
+            textLen: lastAgentReplyText.length,
+          },
           'Spawn result injected back to source chat',
         );
       } catch (err) {
-        logger.error({ agentId, err }, 'Failed to inject spawn result back to source chat');
+        logger.error(
+          { agentId, err },
+          'Failed to inject spawn result back to source chat',
+        );
       }
     }
 
@@ -5277,11 +5596,17 @@ async function processAgentConversation(
     // Spawn agents are fire-and-forget: mark as completed (or error) so they
     // don't accumulate in the active agent list.
     // MUST be inside finally so status is reset even on unhandled exceptions (#227).
-    const endStatus = agent.kind === 'spawn'
-      ? (hadError ? 'error' : 'completed')
-      : 'idle';
+    const endStatus =
+      agent.kind === 'spawn' ? (hadError ? 'error' : 'completed') : 'idle';
     updateAgentStatus(agentId, endStatus, hadError ? lastError : undefined);
-    broadcastAgentStatus(chatJid, agentId, endStatus, agent.name, agent.prompt, hadError ? lastError : undefined);
+    broadcastAgentStatus(
+      chatJid,
+      agentId,
+      endStatus,
+      agent.name,
+      agent.prompt,
+      hadError ? lastError : undefined,
+    );
 
     ipcWatcherManager?.unwatchGroup(effectiveGroup.folder);
   }
@@ -5373,7 +5698,10 @@ async function startMessageLoop(): Promise<void> {
 
                 // Advance cursor past these messages so they aren't re-processed
                 const lastMsg = groupMessages[groupMessages.length - 1];
-                setCursors(chatJid, { timestamp: lastMsg.timestamp, id: lastMsg.id });
+                setCursors(chatJid, {
+                  timestamp: lastMsg.timestamp,
+                  id: lastMsg.id,
+                });
                 continue;
               }
             }
@@ -5602,7 +5930,7 @@ async function ensureDockerRunning(): Promise<void> {
   if (!(await isDockerAvailable())) {
     logger.warn(
       'Docker is not available — container-mode workspaces will fail at message time. ' +
-      'Start Docker if you need container execution (macOS: Docker Desktop, Linux: sudo systemctl start docker).',
+        'Start Docker if you need container execution (macOS: Docker Desktop, Linux: sudo systemctl start docker).',
     );
     return;
   }
@@ -5610,10 +5938,11 @@ async function ensureDockerRunning(): Promise<void> {
 
   // Kill orphaned host agent-runner processes from previous runs
   try {
-    const { stdout: psOut } = await execFileAsync('pgrep', [
-      '-f',
-      'node.*container/agent-runner/dist/index\\.js',
-    ], { timeout: 5000 });
+    const { stdout: psOut } = await execFileAsync(
+      'pgrep',
+      ['-f', 'node.*container/agent-runner/dist/index\\.js'],
+      { timeout: 5000 },
+    );
     const pids = (typeof psOut === 'string' ? psOut : String(psOut))
       .trim()
       .split('\n')
@@ -6016,7 +6345,12 @@ async function connectUserIMChannels(
   qqConfig?: QQConnectConfig | null,
   wechatConfig?: WeChatConnectConfig | null,
   ignoreMessagesBefore?: number,
-): Promise<{ feishu: boolean; telegram: boolean; qq: boolean; wechat: boolean }> {
+): Promise<{
+  feishu: boolean;
+  telegram: boolean;
+  qq: boolean;
+  wechat: boolean;
+}> {
   const onNewChat = buildOnNewChat(userId, homeFolder);
   const resolveGroupFolder = (chatJid: string): string | undefined => {
     return resolveEffectiveFolder(chatJid);
@@ -6315,10 +6649,7 @@ async function main(): Promise<void> {
   try {
     const marked = markStaleSpawnAgentsAsError();
     if (marked > 0) {
-      logger.warn(
-        { marked },
-        'Marked stale spawn agents as error at startup',
-      );
+      logger.warn({ marked }, 'Marked stale spawn agents as error at startup');
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to mark stale spawn agents at startup');
@@ -6382,15 +6713,17 @@ async function main(): Promise<void> {
       abortAllStreamingSessions('服务维护中').catch((err) =>
         logger.warn({ err }, 'Error aborting streaming sessions'),
       ),
-      imManager.disconnectAll().catch((err) =>
-        logger.warn({ err }, 'Error disconnecting IM connections'),
-      ),
+      imManager
+        .disconnectAll()
+        .catch((err) =>
+          logger.warn({ err }, 'Error disconnecting IM connections'),
+        ),
       shutdownWebServer().catch((err) =>
         logger.warn({ err }, 'Error shutting down web server'),
       ),
-      queue.shutdown(1500).catch((err) =>
-        logger.warn({ err }, 'Error shutting down queue'),
-      ),
+      queue
+        .shutdown(1500)
+        .catch((err) => logger.warn({ err }, 'Error shutting down queue')),
     ]);
 
     try {
@@ -6722,10 +7055,15 @@ async function main(): Promise<void> {
   setInterval(
     () => {
       try {
-        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        const tenMinutesAgo = new Date(
+          Date.now() - 10 * 60 * 1000,
+        ).toISOString();
         const cleaned = deleteCompletedAgents(tenMinutesAgo);
         if (cleaned > 0) {
-          logger.info({ cleaned }, 'Periodic cleanup: removed completed agents');
+          logger.info(
+            { cleaned },
+            'Periodic cleanup: removed completed agents',
+          );
         }
       } catch (err) {
         logger.warn({ err }, 'Failed periodic task agent cleanup');
@@ -6809,19 +7147,30 @@ async function main(): Promise<void> {
       }
 
       try {
-        const { users: adminUsers } = listUsers({ role: 'admin', status: 'active' });
+        const { users: adminUsers } = listUsers({
+          role: 'admin',
+          status: 'active',
+        });
         for (const admin of adminUsers) {
           try {
             const result = await syncHostSkillsForUser(admin.id);
             const { added, updated, deleted } = result.stats;
             if (added > 0 || updated > 0 || deleted > 0) {
               logger.info(
-                { userId: admin.id, username: admin.username, ...result.stats, total: result.total },
+                {
+                  userId: admin.id,
+                  username: admin.username,
+                  ...result.stats,
+                  total: result.total,
+                },
                 'Skill auto-sync completed with changes',
               );
             }
           } catch (err) {
-            logger.warn({ err, userId: admin.id }, 'Skill auto-sync failed for user');
+            logger.warn(
+              { err, userId: admin.id },
+              'Skill auto-sync failed for user',
+            );
           }
         }
       } catch (err) {
@@ -6844,7 +7193,8 @@ async function main(): Promise<void> {
   // Initial start + restart when settings change (check every 60s)
   const initSettings = getSystemSettings();
   let _lastSkillSyncEnabled: boolean = initSettings.skillAutoSyncEnabled;
-  let _lastSkillSyncInterval: number = initSettings.skillAutoSyncIntervalMinutes;
+  let _lastSkillSyncInterval: number =
+    initSettings.skillAutoSyncIntervalMinutes;
   startSkillAutoSync();
 
   setInterval(() => {
@@ -6947,7 +7297,14 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
-    onProcess: (groupJid, proc, containerName, groupFolder, displayName, taskRunId) =>
+    onProcess: (
+      groupJid,
+      proc,
+      containerName,
+      groupFolder,
+      displayName,
+      taskRunId,
+    ) =>
       queue.registerProcess(
         groupJid,
         proc,
@@ -6958,6 +7315,25 @@ async function main(): Promise<void> {
         taskRunId,
       ),
     sendMessage,
+    broadcastStreamEvent,
+    onWorkspaceCreated: broadcastGroupCreated,
+    storePromptMessage: (chatJid, senderId, senderName, text) => {
+      const msgId = crypto.randomUUID();
+      const now = new Date().toISOString();
+      ensureChatExists(chatJid);
+      storeMessageDirect(msgId, chatJid, senderId, senderName, text, now, false, {
+        meta: { sourceKind: 'scheduled_task_prompt' },
+      });
+      broadcastNewMessage(chatJid, {
+        id: msgId,
+        chat_jid: chatJid,
+        sender: senderId,
+        sender_name: senderName,
+        content: text,
+        timestamp: now,
+        is_from_me: false,
+      });
+    },
     assistantName: ASSISTANT_NAME,
     dailySummaryDeps: {
       logger,
@@ -7078,7 +7454,13 @@ async function main(): Promise<void> {
       };
     }
 
-    if (!effectiveFeishu && !effectiveTelegram && !effectiveQQ && !effectiveWeChat) continue;
+    if (
+      !effectiveFeishu &&
+      !effectiveTelegram &&
+      !effectiveQQ &&
+      !effectiveWeChat
+    )
+      continue;
 
     try {
       const result = await connectUserIMChannels(

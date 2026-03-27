@@ -47,6 +47,16 @@ export function AppLayout() {
     return () => { unsub(); };
   }, []);
 
+  // 监听 group_created（定时任务工作区创建），刷新侧边栏和任务列表
+  useEffect(() => {
+    const unsub = wsManager.on('group_created', () => {
+      useGroupsStore.getState().loadGroups();
+      // Also refresh tasks — workspace_folder may have been populated
+      import('../../stores/tasks').then((m) => m.useTasksStore.getState().loadTasks());
+    });
+    return () => { unsub(); };
+  }, []);
+
   // 全局监听 agent_status，确保不在 ChatView 页面时也能更新 sub-agent 状态
   useEffect(() => {
     const unsub = wsManager.on('agent_status', (data: any) => {

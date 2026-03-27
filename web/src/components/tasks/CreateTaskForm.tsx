@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Loader2, Sparkles, X, SlidersHorizontal } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -13,79 +13,39 @@ import {
 import { cn } from '@/lib/utils';
 import { api } from '../../api/client';
 import { showToast } from '../../utils/toast';
-
-interface Group {
-  jid: string;
-  name: string;
-  folder: string;
-}
+import { INTERVAL_UNITS, CHANNEL_OPTIONS, toggleNotifyChannel } from '../../utils/task-utils';
+import { useConnectedChannels } from '../../hooks/useConnectedChannels';
 
 interface CreateTaskFormProps {
-  groups: Group[];
   onSubmit: (data: {
-    groupFolder: string;
-    chatJid: string;
     prompt: string;
     scheduleType: 'cron' | 'interval' | 'once';
     scheduleValue: string;
-    contextMode: 'group' | 'isolated';
     executionType: 'agent' | 'script';
+    executionMode?: 'host' | 'container';
     scriptCommand: string;
     notifyChannels: string[] | null;
   }) => Promise<void>;
   onClose: () => void;
   isAdmin?: boolean;
-  homeFolder?: string;
 }
-
-const CHANNEL_OPTIONS = [
-  { key: 'feishu', label: '飞书' },
-  { key: 'telegram', label: 'Telegram' },
-  { key: 'qq', label: 'QQ' },
-  { key: 'wechat', label: '微信' },
-] as const;
-
-const INTERVAL_UNITS = [
-  { label: '秒', ms: 1000 },
-  { label: '分钟', ms: 60 * 1000 },
-  { label: '小时', ms: 60 * 60 * 1000 },
-  { label: '天', ms: 24 * 60 * 60 * 1000 },
-] as const;
 
 type CreateMode = 'ai' | 'manual';
 
-interface ParsedTask {
-  prompt: string;
-  schedule_type: 'cron' | 'interval' | 'once';
-  schedule_value: string;
-  context_mode: 'group' | 'isolated';
-  summary: string;
-}
-
-export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder }: CreateTaskFormProps) {
+export function CreateTaskForm({ onSubmit, onClose, isAdmin }: CreateTaskFormProps) {
   const [mode, setMode] = useState<CreateMode>('ai');
-
-  // Resolve initial group from homeFolder
-  const initialGroup = homeFolder ? groups.find((g) => g.folder === homeFolder) : undefined;
 
   // --- AI mode state ---
   const [aiDescription, setAiDescription] = useState('');
-  const [aiGroupFolder, setAiGroupFolder] = useState(initialGroup?.folder || '');
-  const [aiGroupJid, setAiGroupJid] = useState(initialGroup?.jid || '');
-  const [parsing, setParsing] = useState(false);
-  const [parseError, setParseError] = useState('');
-  const [parsedTask, setParsedTask] = useState<ParsedTask | null>(null);
   const [aiSubmitting, setAiSubmitting] = useState(false);
 
   // --- Manual mode state ---
   const [formData, setFormData] = useState({
-    groupFolder: initialGroup?.folder || '',
-    chatJid: initialGroup?.jid || '',
     prompt: '',
     scheduleType: 'cron' as 'cron' | 'interval' | 'once',
     scheduleValue: '',
-    contextMode: 'isolated' as 'group' | 'isolated',
     executionType: 'agent' as 'agent' | 'script',
+    executionMode: (isAdmin ? 'host' : 'container') as 'host' | 'container',
     scriptCommand: '',
   });
   const [intervalNumber, setIntervalNumber] = useState('');
@@ -96,22 +56,11 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
 
   // --- Shared state ---
   const [notifyChannels, setNotifyChannels] = useState<string[] | null>(null);
-  const [connectedChannels, setConnectedChannels] = useState<Record<string, boolean>>({});
-
-  useEffect(() => {
-    api.get<Record<string, unknown>>('/api/config/user-im/status')
-      .then((data) => {
-        const connected: Record<string, boolean> = {};
-        for (const ch of CHANNEL_OPTIONS) {
-          const status = data[ch.key];
-          connected[ch.key] = !!(status && typeof status === 'object' && (status as any).connected);
-        }
-        setConnectedChannels(connected);
-      })
-      .catch(() => {/* ignore */});
-  }, []);
+  const connectedChannels = useConnectedChannels();
 
   const isScript = formData.executionType === 'script';
+
+  const connectedKeys = CHANNEL_OPTIONS.filter((c) => connectedChannels[c.key]).map((c) => c.key);
 
   const isChannelSelected = (key: string) => {
     if (notifyChannels === null) return true;
@@ -119,66 +68,20 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
   };
 
   const toggleChannel = (key: string) => {
-    setNotifyChannels((prev) => {
-      if (prev === null) {
-        const all = CHANNEL_OPTIONS.map((c) => c.key);
-        return all.filter((c) => c !== key);
-      }
-      if (prev.includes(key)) {
-        return prev.filter((c) => c !== key);
-      }
-      const next = [...prev, key];
-      if (next.length === CHANNEL_OPTIONS.length) return null;
-      return next;
-    });
+    setNotifyChannels((prev) => toggleNotifyChannel(prev, key, connectedKeys));
   };
 
-  // --- AI mode handlers ---
-  const handleAiGroupChange = (value: string) => {
-    const g = groups.find((g) => g.folder === value);
-    setAiGroupFolder(value);
-    setAiGroupJid(g?.jid || '');
-  };
-
-  const handleParse = async () => {
-    if (!aiDescription.trim()) {
-      setParseError('请输入任务描述');
-      return;
-    }
-    if (!aiGroupFolder) {
-      setParseError('请先选择执行工作区');
-      return;
-    }
-    setParsing(true);
-    setParseError('');
-    setParsedTask(null);
-    try {
-      const result = await api.post<{ success: boolean; parsed: ParsedTask }>('/api/tasks/parse', {
-        description: aiDescription.trim(),
-      });
-      setParsedTask(result.parsed);
-    } catch (err) {
-      setParseError(err instanceof Error ? err.message : 'AI 解析失败，请重试');
-    } finally {
-      setParsing(false);
-    }
-  };
-
-  const handleAiSubmit = async () => {
-    if (!parsedTask || !aiGroupFolder) return;
+  // --- AI mode handler ---
+  const handleAiCreate = async () => {
+    if (!aiDescription.trim()) return;
     setAiSubmitting(true);
     try {
-      await onSubmit({
-        groupFolder: aiGroupFolder,
-        chatJid: aiGroupJid,
-        prompt: parsedTask.prompt,
-        scheduleType: parsedTask.schedule_type,
-        scheduleValue: parsedTask.schedule_value,
-        contextMode: parsedTask.context_mode,
-        executionType: 'agent',
-        scriptCommand: '',
-        notifyChannels,
+      await api.post('/api/tasks/ai', {
+        description: aiDescription.trim(),
+        notify_channels: notifyChannels,
       });
+      showToast('任务已创建', 'AI 正在后台解析调度参数，稍后自动激活');
+      onClose();
     } catch (error) {
       showToast('创建失败', error instanceof Error ? error.message : '请稍后重试');
     } finally {
@@ -189,7 +92,6 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
   // --- Manual mode handlers ---
   const validateForm = () => {
     const newErrors: Record<string, string> = {};
-    if (!formData.groupFolder) newErrors.groupFolder = '请选择执行工作区';
     if (isScript) {
       if (!formData.scriptCommand.trim()) newErrors.scriptCommand = '请输入脚本命令';
     } else {
@@ -233,7 +135,15 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
     }
     setSubmitting(true);
     try {
-      await onSubmit({ ...formData, scheduleValue: finalScheduleValue, notifyChannels });
+      await onSubmit({
+        prompt: formData.prompt,
+        scheduleType: formData.scheduleType,
+        scheduleValue: finalScheduleValue,
+        executionType: formData.executionType,
+        executionMode: formData.executionMode,
+        scriptCommand: formData.scriptCommand,
+        notifyChannels,
+      });
     } catch (error) {
       console.error('Failed to create task:', error);
     } finally {
@@ -241,19 +151,9 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
     }
   };
 
-  const handleGroupChange = (value: string) => {
-    const g = groups.find((g) => g.folder === value);
-    setFormData({ ...formData, groupFolder: value, chatJid: g?.jid || '' });
-  };
-
-  const scheduleTypeLabel = (type: string) => {
-    if (type === 'cron') return 'Cron 表达式';
-    if (type === 'interval') return '间隔执行';
-    if (type === 'once') return '单次执行';
-    return type;
-  };
-
   // --- Notify channels UI (shared) ---
+  const connectedOptions = CHANNEL_OPTIONS.filter((ch) => connectedChannels[ch.key]);
+
   const renderNotifyChannels = () => (
     <div>
       <label className="block text-sm font-medium text-foreground mb-2">通知渠道</label>
@@ -262,33 +162,31 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
           <input type="checkbox" checked disabled className="rounded" />
           Web（始终）
         </label>
-        {CHANNEL_OPTIONS.map((ch) => {
-          const connected = connectedChannels[ch.key];
-          if (connected === undefined) return null;
-          return (
-            <label
-              key={ch.key}
-              className={cn(
-                'inline-flex items-center gap-1.5 text-sm cursor-pointer',
-                !connected && 'text-muted-foreground/50 cursor-not-allowed',
-              )}
-            >
-              <input
-                type="checkbox"
-                checked={isChannelSelected(ch.key)}
-                onChange={() => toggleChannel(ch.key)}
-                disabled={!connected}
-                className="rounded"
-              />
-              {ch.label}
-              {!connected && <span className="text-xs text-muted-foreground/50">（未连接）</span>}
-            </label>
-          );
-        })}
+        {connectedOptions.map((ch) => (
+          <label
+            key={ch.key}
+            className="inline-flex items-center gap-1.5 text-sm cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              checked={isChannelSelected(ch.key)}
+              onChange={() => toggleChannel(ch.key)}
+              className="rounded"
+            />
+            {ch.label}
+          </label>
+        ))}
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">
-        选择任务结果推送的 IM 渠道，默认推送到所有已连接渠道
-      </p>
+      {connectedOptions.length === 0 && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          未绑定任何 IM 渠道，任务结果仅在 Web 工作区展示
+        </p>
+      )}
+      {connectedOptions.length > 0 && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          选择任务结果推送的 IM 渠道，默认推送到所有已连接渠道
+        </p>
+      )}
     </div>
   );
 
@@ -337,32 +235,6 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
         {/* AI Mode */}
         {mode === 'ai' && (
           <div className="p-6 space-y-4">
-            {/* Group */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                执行工作区 <span className="text-red-500">*</span>
-              </label>
-              {groups.length === 1 ? (
-                <p className="text-sm text-foreground bg-muted px-3 py-2 rounded border border-border">
-                  {groups[0].name} ({groups[0].folder})
-                </p>
-              ) : (
-                <Select value={aiGroupFolder || undefined} onValueChange={handleAiGroupChange}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="请选择" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {groups.map((group) => (
-                      <SelectItem key={group.jid} value={group.folder}>
-                        {group.name} ({group.folder})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              <p className="mt-1 text-xs text-muted-foreground">默认使用主工作区，通常无需修改</p>
-            </div>
-
             {/* Description */}
             <div>
               <label className="block text-sm font-medium text-foreground mb-2">
@@ -370,147 +242,46 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
               </label>
               <Textarea
                 value={aiDescription}
-                onChange={(e) => { setAiDescription(e.target.value); setParsedTask(null); }}
+                onChange={(e) => setAiDescription(e.target.value)}
                 rows={4}
                 className="resize-none"
                 placeholder="例如：每天早上 9 点帮我总结最新的科技新闻&#10;每周一下午 2 点检查项目依赖是否有安全更新&#10;每隔 2 小时检查一次服务器状态"
               />
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                AI 会自动解析调度时间和任务内容，创建后在后台完成解析
+              </p>
             </div>
 
-            {/* Parse Button */}
-            {!parsedTask && (
+            {renderNotifyChannels()}
+
+            {/* Actions */}
+            <div className="flex items-center justify-end gap-3 pt-4 border-t border-border">
+              <Button type="button" variant="outline" onClick={onClose}>
+                取消
+              </Button>
               <Button
-                onClick={handleParse}
-                disabled={parsing || !aiDescription.trim() || !aiGroupFolder}
-                className="w-full"
+                onClick={handleAiCreate}
+                disabled={aiSubmitting || !aiDescription.trim()}
               >
-                {parsing ? (
+                {aiSubmitting ? (
                   <>
                     <Loader2 className="size-4 animate-spin" />
-                    AI 解析中...
+                    创建中...
                   </>
                 ) : (
                   <>
                     <Sparkles className="size-4" />
-                    AI 解析
+                    创建任务
                   </>
                 )}
               </Button>
-            )}
-
-            {parseError && (
-              <p className="text-sm text-red-600">{parseError}</p>
-            )}
-
-            {/* Parsed Result */}
-            {parsedTask && (
-              <div className="space-y-4">
-                <div className="bg-brand-50/50 border border-brand-200 rounded-lg p-4 space-y-3">
-                  <div className="flex items-center gap-2 text-sm font-medium text-primary">
-                    <Sparkles className="w-4 h-4" />
-                    AI 解析结果
-                  </div>
-                  <p className="text-sm text-muted-foreground">{parsedTask.summary}</p>
-
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div>
-                      <span className="text-muted-foreground">调度类型：</span>
-                      <span className="text-foreground font-medium ml-1">
-                        {scheduleTypeLabel(parsedTask.schedule_type)}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">调度值：</span>
-                      <code className="text-foreground bg-card px-1.5 py-0.5 rounded border border-border text-xs ml-1">
-                        {parsedTask.schedule_value}
-                      </code>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">上下文：</span>
-                      <span className="text-foreground font-medium ml-1">
-                        {parsedTask.context_mode === 'isolated' ? '独立执行' : '共享上下文'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Editable prompt */}
-                  <div>
-                    <label className="block text-xs text-muted-foreground mb-1">任务 Prompt（可编辑）</label>
-                    <Textarea
-                      value={parsedTask.prompt}
-                      onChange={(e) => setParsedTask({ ...parsedTask, prompt: e.target.value })}
-                      rows={6}
-                      className="resize-y min-h-[120px] text-sm"
-                    />
-                  </div>
-
-                  {/* Editable schedule_value */}
-                  <div>
-                    <label className="block text-xs text-muted-foreground mb-1">调度值（可编辑）</label>
-                    <Input
-                      value={parsedTask.schedule_value}
-                      onChange={(e) => setParsedTask({ ...parsedTask, schedule_value: e.target.value })}
-                      className="text-sm font-mono"
-                    />
-                  </div>
-                </div>
-
-                {renderNotifyChannels()}
-
-                {/* Actions */}
-                <div className="flex items-center justify-end gap-3 pt-4 border-t border-border">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setParsedTask(null)}
-                  >
-                    重新解析
-                  </Button>
-                  <Button
-                    onClick={handleAiSubmit}
-                    disabled={aiSubmitting}
-                  >
-                    {aiSubmitting && <Loader2 className="size-4 animate-spin" />}
-                    {aiSubmitting ? '创建中...' : '确认创建'}
-                  </Button>
-                </div>
-              </div>
-            )}
+            </div>
           </div>
         )}
 
         {/* Manual Mode */}
         {mode === 'manual' && (
           <form onSubmit={handleManualSubmit} className="p-6 space-y-4">
-            {/* Group Selection */}
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-2">
-                执行工作区 <span className="text-red-500">*</span>
-              </label>
-              {groups.length === 1 ? (
-                <p className="text-sm text-foreground bg-muted px-3 py-2 rounded border border-border">
-                  {groups[0].name} ({groups[0].folder})
-                </p>
-              ) : (
-                <Select value={formData.groupFolder || undefined} onValueChange={handleGroupChange}>
-                  <SelectTrigger className={cn("w-full", errors.groupFolder && "border-red-500")}>
-                    <SelectValue placeholder="请选择" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {groups.map((group) => (
-                      <SelectItem key={group.jid} value={group.folder}>
-                        {group.name} ({group.folder})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              <p className="mt-1 text-xs text-muted-foreground">默认使用主工作区，通常无需修改</p>
-              {errors.groupFolder && (
-                <p className="mt-1 text-sm text-red-600">{errors.groupFolder}</p>
-              )}
-            </div>
-
             {/* Execution Type */}
             {isAdmin && (
               <div>
@@ -535,6 +306,32 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                   {isScript
                     ? '直接执行 Shell 命令，零 API 消耗，适合确定性任务'
                     : '启动完整 Claude Agent，消耗 API tokens'}
+                </p>
+              </div>
+            )}
+
+            {/* Execution Mode */}
+            {isAdmin && (
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">
+                  执行模式
+                </label>
+                <Select
+                  value={formData.executionMode}
+                  onValueChange={(value) =>
+                    setFormData({ ...formData, executionMode: value as 'host' | 'container' })
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="host">宿主机</SelectItem>
+                    <SelectItem value="container">Docker 容器</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  宿主机模式直接在服务器上运行，Docker 容器模式在隔离环境中运行
                 </p>
               </div>
             )}
@@ -616,10 +413,10 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                     value={formData.scheduleValue}
                     onChange={(e) => setFormData({ ...formData, scheduleValue: e.target.value })}
                     className={cn(errors.scheduleValue && "border-red-500")}
-                    placeholder="例如: 0 0 * * * (每天 0 点)"
+                    placeholder="例如: 0 9 * * * (每天 9 点)"
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
-                    格式: 分 时 日 月 星期（如 0 9 * * * = 每天 9 点）
+                    格式: 分 时 日 月 星期（北京时间 UTC+8）。常用: <code className="bg-muted px-1 rounded">*/5 * * * *</code> 每5分钟, <code className="bg-muted px-1 rounded">0 9 * * 1-5</code> 工作日9点, <code className="bg-muted px-1 rounded">@daily</code> 每天
                   </p>
                 </>
               )}
@@ -665,32 +462,6 @@ export function CreateTaskForm({ groups, onSubmit, onClose, isAdmin, homeFolder 
                 <p className="mt-1 text-sm text-red-600">{errors.scheduleValue}</p>
               )}
             </div>
-
-            {/* Context Mode */}
-            {!isScript && (
-              <div>
-                <label className="block text-sm font-medium text-foreground mb-2">
-                  上下文模式
-                </label>
-                <Select
-                  value={formData.contextMode}
-                  onValueChange={(value) =>
-                    setFormData({ ...formData, contextMode: value as 'group' | 'isolated' })
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="isolated">独立执行（推荐）</SelectItem>
-                    <SelectItem value="group">共享群组上下文</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  共享群组上下文会复用该群组会话，独立执行每次使用隔离会话
-                </p>
-              </div>
-            )}
 
             {renderNotifyChannels()}
 

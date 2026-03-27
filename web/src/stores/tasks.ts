@@ -15,9 +15,12 @@ export interface ScheduledTask {
   next_run: string | null;
   last_run?: string | null;
   last_result?: string | null;
-  status: 'active' | 'paused' | 'completed';
+  status: 'active' | 'paused' | 'completed' | 'parsing';
   created_at: string;
   notify_channels?: string[] | null;
+  execution_mode?: 'host' | 'container' | null;
+  workspace_jid?: string | null;
+  workspace_folder?: string | null;
 }
 
 export interface TaskRunLog {
@@ -38,13 +41,11 @@ interface TasksState {
   runningTaskIds: Set<string>;
   loadTasks: () => Promise<void>;
   createTask: (
-    groupFolder: string,
-    chatJid: string,
     prompt: string,
     scheduleType: 'cron' | 'interval' | 'once',
     scheduleValue: string,
-    contextMode: 'group' | 'isolated',
     executionType?: 'agent' | 'script',
+    executionMode?: 'host' | 'container',
     scriptCommand?: string,
     notifyChannels?: string[] | null,
   ) => Promise<void>;
@@ -87,13 +88,11 @@ export const useTasksStore = create<TasksState>((set, get) => ({
   },
 
   createTask: async (
-    groupFolder: string,
-    chatJid: string,
     prompt: string,
     scheduleType: 'cron' | 'interval' | 'once',
     scheduleValue: string,
-    contextMode: 'group' | 'isolated',
     executionType?: 'agent' | 'script',
+    executionMode?: 'host' | 'container',
     scriptCommand?: string,
     notifyChannels?: string[] | null,
   ) => {
@@ -104,15 +103,15 @@ export const useTasksStore = create<TasksState>((set, get) => ({
           : scheduleValue.trim();
 
       const body: Record<string, unknown> = {
-        group_folder: groupFolder,
-        chat_jid: chatJid,
         prompt: prompt.trim(),
         schedule_type: scheduleType,
         schedule_value: normalizedScheduleValue,
-        context_mode: contextMode,
       };
       if (executionType) {
         body.execution_type = executionType;
+      }
+      if (executionMode) {
+        body.execution_mode = executionMode;
       }
       if (scriptCommand) {
         body.script_command = scriptCommand;

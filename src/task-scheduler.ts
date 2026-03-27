@@ -1,4 +1,5 @@
 import { ChildProcess } from 'child_process';
+import crypto from 'node:crypto';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 import path from 'path';
@@ -6,7 +7,6 @@ import path from 'path';
 import {
   DATA_DIR,
   GROUPS_DIR,
-  MAIN_GROUP_FOLDER,
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
@@ -19,18 +19,25 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  addGroupMember,
   getAllTasks,
   cleanupOldTaskRunLogs,
+  ensureChatExists,
   getDueTasks,
   getTaskById,
   getUserById,
+  getUserHomeGroup,
   logTaskRun,
+  setRegisteredGroup,
+  updateChatName,
   updateTaskAfterRun,
+  updateTaskWorkspace,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { logger } from './logger.js';
 import { hasScriptCapacity, runScript } from './script-runner.js';
-import { RegisteredGroup, ScheduledTask } from './types.js';
+import type { StreamEvent } from './stream-event.types.js';
+import { ExecutionMode, RegisteredGroup, ScheduledTask } from './types.js';
 import { checkBillingAccessFresh, isBillingEnabled } from './billing.js';
 
 /**
@@ -53,6 +60,97 @@ function resolveTargetGroupJid(
   return preferred?.[0] || '';
 }
 
+function resolveTaskExecutionMode(
+  task: ScheduledTask,
+  deps: SchedulerDependencies,
+): ExecutionMode {
+  if (task.execution_mode === 'host' || task.execution_mode === 'container') {
+    return task.execution_mode;
+  }
+  // Legacy fallback: inherit from the original group
+  const groups = deps.registeredGroups();
+  const group = groups[task.chat_jid];
+  if (group) {
+    if (!group.is_home) {
+      const homeSibling = Object.values(groups).find(
+        (g) => g.folder === group.folder && g.is_home,
+      );
+      if (homeSibling) return homeSibling.executionMode || 'container';
+    }
+    return group.executionMode || 'container';
+  }
+  return 'container';
+}
+
+function ensureTaskWorkspace(
+  task: ScheduledTask,
+  deps: SchedulerDependencies,
+): { jid: string; folder: string } {
+  // If workspace already exists and is registered, reuse it
+  if (task.workspace_jid && task.workspace_folder) {
+    const groups = deps.registeredGroups();
+    if (groups[task.workspace_jid]) {
+      return { jid: task.workspace_jid, folder: task.workspace_folder };
+    }
+    // Workspace was deleted externally — clean up orphaned filesystem directory before recreating
+    const oldDir = path.join(GROUPS_DIR, task.workspace_folder);
+    try {
+      fs.rmSync(oldDir, { recursive: true, force: true });
+    } catch { /* ignore if already gone */ }
+  }
+
+  const jid = `web:${crypto.randomUUID()}`;
+  // Strip existing 'task-' prefix from IPC-originated IDs to avoid 'task-task-...'
+  const idBase = task.id.startsWith('task-') ? task.id.slice(5) : task.id;
+  const folder = `task-${idBase.slice(0, 12)}`;
+  // 从 prompt 提取简短名称（取第一行前 12 个字符）
+  const firstLine = task.prompt.split('\n')[0].trim();
+  const shortName = firstLine.slice(0, 12).trim() || task.id.slice(0, 6);
+  const name = shortName;
+
+  const executionMode = resolveTaskExecutionMode(task, deps);
+
+  const group: RegisteredGroup = {
+    name,
+    folder,
+    added_at: new Date().toISOString(),
+    executionMode,
+    created_by: task.created_by,
+  };
+
+  setRegisteredGroup(jid, group);
+  ensureChatExists(jid);
+  updateChatName(jid, name);
+  // Resolve owner: prefer task.created_by, fallback to source group's owner
+  const ownerId = task.created_by
+    || Object.values(deps.registeredGroups()).find((g) => g.folder === task.group_folder)?.created_by
+    || null;
+  if (ownerId) {
+    addGroupMember(folder, ownerId, 'owner', ownerId);
+  }
+  deps.registeredGroups()[jid] = group;
+
+  // Create filesystem directory
+  const groupDir = path.join(GROUPS_DIR, folder);
+  fs.mkdirSync(groupDir, { recursive: true });
+
+  // Persist workspace info back to the task record
+  updateTaskWorkspace(task.id, jid, folder);
+  // Also update the in-memory task object
+  task.workspace_jid = jid;
+  task.workspace_folder = folder;
+
+  logger.info(
+    { taskId: task.id, folder, jid, executionMode },
+    'Created task workspace',
+  );
+
+  // Notify frontend via WebSocket so sidebar refreshes (scoped to task owner)
+  deps.onWorkspaceCreated?.(jid, folder, name, task.created_by ?? undefined);
+
+  return { jid, folder };
+}
+
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   getSessions: () => Record<string, string>;
@@ -70,6 +168,10 @@ export interface SchedulerDependencies {
     text: string,
     options?: { source?: string },
   ) => Promise<string | undefined | void>;
+  broadcastStreamEvent?: (chatJid: string, event: StreamEvent) => void;
+  onWorkspaceCreated?: (jid: string, folder: string, name: string, userId?: string) => void;
+  /** Store task prompt as a user-visible message in the workspace chat */
+  storePromptMessage?: (chatJid: string, senderId: string, senderName: string, text: string) => void;
   assistantName: string;
   dailySummaryDeps?: DailySummaryDeps;
 }
@@ -127,32 +229,22 @@ function isTaskStillActive(taskId: string, label?: string): boolean {
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
-  groupJid: string,
   options?: RunTaskOptions,
 ): Promise<void> {
   if (!options?.manualRun && !isTaskStillActive(task.id, 'task')) return;
 
-  const effectiveJid = options?.taskRunId
-    ? `${groupJid}#task:${options.taskRunId}`
-    : groupJid;
-
   runningTaskIds.add(task.id);
   const startTime = Date.now();
-  const groupDir = path.join(GROUPS_DIR, task.group_folder);
-  fs.mkdirSync(groupDir, { recursive: true });
 
-  logger.info(
-    { taskId: task.id, group: task.group_folder },
-    'Running scheduled task',
-  );
+  // Ensure task has a dedicated workspace (Agent tasks only)
+  const workspace = ensureTaskWorkspace(task, deps);
+  const workspaceGroups = deps.registeredGroups();
+  const workspaceGroup = workspaceGroups[workspace.jid];
 
-  const groups = deps.registeredGroups();
-  const group = groups[groupJid];
-
-  if (!group || group.folder !== task.group_folder) {
+  if (!workspaceGroup) {
     logger.error(
-      { taskId: task.id, groupFolder: task.group_folder, groupJid },
-      'Group not found for task',
+      { taskId: task.id, workspaceJid: workspace.jid },
+      'Workspace group not found after creation',
     );
     logTaskRun({
       task_id: task.id,
@@ -160,23 +252,35 @@ async function runTask(
       duration_ms: Date.now() - startTime,
       status: 'error',
       result: null,
-      error: `Group not found: ${task.group_folder}`,
+      error: `Workspace group not found: ${workspace.jid}`,
     });
     runningTaskIds.delete(task.id);
     return;
   }
 
+  const effectiveJid = options?.taskRunId
+    ? `${workspace.jid}#task:${options.taskRunId}`
+    : workspace.jid;
+
+  const groupDir = path.join(GROUPS_DIR, workspace.folder);
+  fs.mkdirSync(groupDir, { recursive: true });
+
+  logger.info(
+    { taskId: task.id, group: workspace.folder },
+    'Running scheduled task',
+  );
+
   // Billing quota check before running task
-  if (isBillingEnabled() && group.created_by) {
-    const owner = getUserById(group.created_by);
+  if (isBillingEnabled() && workspaceGroup.created_by) {
+    const owner = getUserById(workspaceGroup.created_by);
     if (owner && owner.role !== 'admin') {
-      const accessResult = checkBillingAccessFresh(group.created_by, owner.role);
+      const accessResult = checkBillingAccessFresh(workspaceGroup.created_by, owner.role);
       if (!accessResult.allowed) {
         const reason = accessResult.reason || '当前账户不可用';
         logger.info(
           {
             taskId: task.id,
-            userId: group.created_by,
+            userId: workspaceGroup.created_by,
             reason,
             blockType: accessResult.blockType,
           },
@@ -200,11 +304,11 @@ async function runTask(
   }
 
   // Update tasks snapshot for container to read (filtered by group)
-  const isHome = !!group.is_home;
-  const isAdminHome = isHome && task.group_folder === MAIN_GROUP_FOLDER;
+  const isHome = false; // Task workspaces are never home
+  const isAdminHome = false;
   const tasks = getAllTasks();
   writeTasksSnapshot(
-    task.group_folder,
+    workspace.folder,
     isAdminHome,
     tasks.map((t) => ({
       id: t.id,
@@ -217,16 +321,22 @@ async function runTask(
     })),
   );
 
+  // Store task prompt as a user message in workspace chat so it's visible in conversation
+  if (deps.storePromptMessage) {
+    const owner = workspaceGroup.created_by ? getUserById(workspaceGroup.created_by) : null;
+    const senderName = owner?.display_name || owner?.username || '定时任务';
+    deps.storePromptMessage(workspace.jid, owner?.id || 'system', senderName, task.prompt);
+  }
+
   let result: string | null = null;
   let error: string | null = null;
   // Track the time of last meaningful output from the agent.
   // duration_ms should measure actual work time, not include idle wait.
   let lastOutputTime = startTime;
 
-  // For group context mode, use the group's current session
+  // Use persistent session for task workspace
   const sessions = deps.getSessions();
-  const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+  const sessionId = sessions[workspace.folder];
 
   // Idle timer: writes _close sentinel after idleTimeout of no output,
   // so the container exits instead of hanging at waitForIpcMessage forever.
@@ -244,30 +354,22 @@ async function runTask(
   };
 
   try {
-    // Resolve execution mode: if this group is not is_home but shares a folder
-    // with an is_home group, inherit that group's execution mode (same logic as
-    // queue.setHostModeResolver). Fixes tasks created from Telegram/IM picking
-    // container mode even though admin home folder should run in host mode.
-    let executionMode = group.executionMode || 'container';
-    if (!group.is_home) {
-      const allGroups = deps.registeredGroups();
-      const homeSibling = Object.values(allGroups).find(
-        (g) => g.folder === group.folder && g.is_home,
-      );
-      if (homeSibling) {
-        executionMode = homeSibling.executionMode || 'container';
-      }
-    }
+    const executionMode = resolveTaskExecutionMode(task, deps);
     const runAgent =
       executionMode === 'host' ? runHostAgent : runContainerAgent;
 
+    // Resolve owner's home folder for correct volume mounts (skills, memory, CLAUDE.md)
+    const ownerHomeFolder = workspaceGroup.created_by
+      ? getUserHomeGroup(workspaceGroup.created_by)?.folder || workspace.folder
+      : workspace.folder;
+
     const output = await runAgent(
-      group,
+      workspaceGroup,
       {
         prompt: task.prompt,
         sessionId,
-        groupFolder: task.group_folder,
-        chatJid: groupJid,
+        groupFolder: workspace.folder,
+        chatJid: workspace.jid,
         isMain: isAdminHome,
         isHome,
         isAdminHome,
@@ -279,18 +381,18 @@ async function runTask(
           effectiveJid,
           proc,
           executionMode === 'container' ? identifier : null,
-          task.group_folder,
+          workspace.folder,
           identifier,
           options?.taskRunId,
         ),
       async (streamedOutput: ContainerOutput) => {
+        // Broadcast stream events to WebSocket clients viewing the task workspace
+        if (streamedOutput.status === 'stream' && streamedOutput.streamEvent) {
+          deps.broadcastStreamEvent?.(workspace.jid, streamedOutput.streamEvent);
+        }
         if (streamedOutput.result) {
           result = streamedOutput.result;
           lastOutputTime = Date.now();
-          // Scheduled tasks should only produce user-visible output via the
-          // send_message MCP tool (IPC messages/*.json → index.ts polling).
-          // Do NOT forward raw agent text here — it contains intermediate
-          // reasoning / status updates that leak to the user as noise.
           resetIdleTimer();
         }
         if (streamedOutput.status === 'error') {
@@ -298,6 +400,7 @@ async function runTask(
           lastOutputTime = Date.now();
         }
       },
+      ownerHomeFolder,
     );
 
     if (idleTimer) clearTimeout(idleTimer);
@@ -327,7 +430,7 @@ async function runTask(
       const taskRunDir = path.join(
         DATA_DIR,
         'ipc',
-        task.group_folder,
+        workspace.folder,
         'tasks-run',
         options.taskRunId,
       );
@@ -576,18 +679,16 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
               'Unhandled error in runScriptTask',
             );
           });
-        } else if (currentTask.context_mode === 'isolated') {
-          // Isolated tasks use a virtual JID for independent serialization
-          const virtualJid = `${targetGroupJid}#task:${currentTask.id}`;
-          deps.queue.enqueueTask(virtualJid, currentTask.id, () =>
-            runTask(currentTask, deps, targetGroupJid, {
+        } else {
+          // Each agent task has a dedicated workspace; use workspace JID or
+          // fallback to targetGroupJid for queue serialization key
+          const taskQueueJid = currentTask.workspace_jid
+            ? `${currentTask.workspace_jid}#task:${currentTask.id}`
+            : `${targetGroupJid}#task:${currentTask.id}`;
+          deps.queue.enqueueTask(taskQueueJid, currentTask.id, () =>
+            runTask(currentTask, deps, {
               taskRunId: currentTask.id,
             }),
-          );
-        } else {
-          // Group-mode tasks share the group's serialization key
-          deps.queue.enqueueTask(targetGroupJid, currentTask.id, () =>
-            runTask(currentTask, deps, targetGroupJid),
           );
         }
       }
@@ -628,18 +729,13 @@ export function triggerTaskNow(
       logger.error({ taskId, err }, 'Manual script task failed'),
     );
   } else {
-    const opts: RunTaskOptions = { manualRun: true };
-    if (task.context_mode === 'isolated') {
-      opts.taskRunId = task.id;
-      const virtualJid = `${targetGroupJid}#task:${task.id}`;
-      deps.queue.enqueueTask(virtualJid, task.id, () =>
-        runTask(task, deps, targetGroupJid, opts),
-      );
-    } else {
-      deps.queue.enqueueTask(targetGroupJid, task.id, () =>
-        runTask(task, deps, targetGroupJid, opts),
-      );
-    }
+    const opts: RunTaskOptions = { manualRun: true, taskRunId: task.id };
+    const taskQueueJid = task.workspace_jid
+      ? `${task.workspace_jid}#task:${task.id}`
+      : `${targetGroupJid}#task:${task.id}`;
+    deps.queue.enqueueTask(taskQueueJid, task.id, () =>
+      runTask(task, deps, opts),
+    );
   }
 
   return { success: true };

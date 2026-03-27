@@ -1523,6 +1523,16 @@ export function broadcastStreamEvent(
   updateStreamingSnapshot(snapshotJid, event);
 }
 
+export function broadcastGroupCreated(
+  jid: string,
+  folder: string,
+  name: string,
+  userId?: string,
+): void {
+  const allowedUserIds = userId ? new Set([userId]) : undefined;
+  safeBroadcast({ type: 'group_created', jid, folder, name }, false, allowedUserIds);
+}
+
 export function broadcastBillingUpdate(
   userId: string,
   usage: import('./types.js').BillingAccessResult,

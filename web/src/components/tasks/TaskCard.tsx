@@ -1,8 +1,18 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronUp, Pause, Play, Trash2, Zap } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import {
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  Pause,
+  Play,
+  Trash2,
+  Zap,
+} from 'lucide-react';
 import { ScheduledTask } from '../../stores/tasks';
 import { TaskDetail } from './TaskDetail';
 import { showToast } from '../../utils/toast';
+import { formatInterval } from '../../utils/task-utils';
 
 interface TaskCardProps {
   task: ScheduledTask;
@@ -12,14 +22,23 @@ interface TaskCardProps {
   onRunNow?: (id: string) => void;
 }
 
-export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCardProps) {
+export function TaskCard({
+  task,
+  onPause,
+  onResume,
+  onDelete,
+  onRunNow,
+}: TaskCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
+  const navigate = useNavigate();
 
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'active':
         return 'bg-green-100 text-green-600';
+      case 'parsing':
+        return 'bg-blue-100 text-blue-600';
       case 'paused':
         return 'bg-amber-100 text-amber-600';
       case 'completed':
@@ -33,6 +52,8 @@ export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCa
     switch (status) {
       case 'active':
         return '运行中';
+      case 'parsing':
+        return 'AI 解析中...';
       case 'paused':
         return '已暂停';
       case 'completed':
@@ -77,45 +98,42 @@ export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCa
       >
         <div className="flex items-start justify-between">
           <div className="flex-1 min-w-0 mr-4">
-            {/* Prompt / Script (truncated 2 lines) */}
-            <p className="text-foreground font-medium line-clamp-2 mb-2">
-              {task.execution_type === 'script'
-                ? task.script_command || task.prompt
-                : task.prompt}
+            {/* Title — derived from prompt first line, same as workspace name */}
+            <p className="text-foreground font-semibold text-sm mb-1">
+              {(task.prompt || '').split('\n')[0].trim().slice(0, 30).trim() ||
+                task.id.slice(0, 8)}
             </p>
 
-            {/* Schedule Info */}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm mb-2">
+            {/* Badges */}
+            <div className="flex flex-wrap items-center gap-1.5 mb-2">
               {task.execution_type === 'script' && (
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                   脚本
                 </span>
               )}
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground">调度:</span>
-                <span className="text-foreground font-medium">
-                  {task.schedule_type === 'cron' && 'Cron'}
-                  {task.schedule_type === 'interval' && '间隔'}
-                  {task.schedule_type === 'once' && '单次'}
+              {task.execution_mode && (
+                <span
+                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                    task.execution_mode === 'host'
+                      ? 'bg-purple-100 text-purple-800'
+                      : 'bg-cyan-100 text-cyan-800'
+                  }`}
+                >
+                  {task.execution_mode === 'host' ? '宿主机' : 'Docker'}
                 </span>
-                <code className="text-xs bg-muted px-2 py-0.5 rounded">
-                  {task.schedule_value}
-                </code>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground">群组:</span>
-                <span className="text-foreground font-medium">
-                  {task.group_folder}
-                </span>
-              </div>
+              )}
+              <span className="text-xs text-muted-foreground">
+                {task.schedule_type === 'cron' && task.schedule_value}
+                {task.schedule_type === 'interval' && `每 ${formatInterval(task.schedule_value)}`}
+                {task.schedule_type === 'once' && '单次执行'}
+              </span>
             </div>
 
             {/* Status Badge */}
             <div>
               <span
                 className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(
-                  task.status
+                  task.status,
                 )}`}
               >
                 {getStatusLabel(task.status)}
@@ -125,6 +143,21 @@ export function TaskCard({ task, onPause, onResume, onDelete, onRunNow }: TaskCa
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2 flex-shrink-0">
+            {/* Open Workspace */}
+            {task.workspace_folder && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/chat/${task.workspace_folder}`);
+                }}
+                className="p-2 text-muted-foreground hover:text-primary hover:bg-brand-50 rounded-lg transition-colors cursor-pointer"
+                title="打开工作区"
+                aria-label="打开任务工作区"
+              >
+                <ExternalLink className="w-5 h-5" />
+              </button>
+            )}
+
             {/* Run Now */}
             {onRunNow &&
               (task.status === 'active' || task.status === 'paused') && (

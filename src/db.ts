@@ -638,6 +638,9 @@ export function initDatabase(): void {
   ensureColumn('scheduled_tasks', 'execution_type', "TEXT DEFAULT 'agent'");
   ensureColumn('scheduled_tasks', 'script_command', 'TEXT');
   ensureColumn('scheduled_tasks', 'notify_channels', 'TEXT');
+  ensureColumn('scheduled_tasks', 'execution_mode', 'TEXT');
+  ensureColumn('scheduled_tasks', 'workspace_jid', 'TEXT');
+  ensureColumn('scheduled_tasks', 'workspace_folder', 'TEXT');
   ensureColumn('registered_groups', 'selected_skills', 'TEXT');
   ensureColumn('sessions', 'agent_id', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('agents', 'kind', "TEXT NOT NULL DEFAULT 'task'");
@@ -1186,7 +1189,7 @@ export function initDatabase(): void {
     db.exec('ALTER TABLE agents ADD COLUMN spawned_from_jid TEXT');
   }
 
-  const SCHEMA_VERSION = '32';
+  const SCHEMA_VERSION = '33';
   db.prepare(
     'INSERT OR REPLACE INTO router_state (key, value) VALUES (?, ?)',
   ).run('schema_version', SCHEMA_VERSION);
@@ -1814,8 +1817,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, next_run, status, created_at, created_by, notify_channels)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_type, script_command, execution_mode, next_run, status, created_at, created_by, notify_channels)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -1824,9 +1827,10 @@ export function createTask(
     task.prompt,
     task.schedule_type,
     task.schedule_value,
-    task.context_mode || 'isolated',
+    task.context_mode || 'group',
     task.execution_type || 'agent',
     task.script_command ?? null,
+    task.execution_mode ?? null,
     task.next_run,
     task.status,
     task.created_at,
@@ -1835,7 +1839,7 @@ export function createTask(
   );
 }
 
-/** Parse notify_channels from JSON string stored in DB */
+/** Parse notify_channels from JSON string stored in DB and normalize new fields */
 function mapTaskRow(row: unknown): ScheduledTask {
   const r = row as any;
   if (typeof r.notify_channels === 'string') {
@@ -1847,6 +1851,10 @@ function mapTaskRow(row: unknown): ScheduledTask {
   } else if (r.notify_channels === undefined) {
     r.notify_channels = null;
   }
+  // Normalize new nullable fields
+  if (r.execution_mode === undefined) r.execution_mode = null;
+  if (r.workspace_jid === undefined) r.workspace_jid = null;
+  if (r.workspace_folder === undefined) r.workspace_folder = null;
   return r as ScheduledTask;
 }
 
@@ -1881,6 +1889,7 @@ export function updateTask(
       | 'schedule_value'
       | 'context_mode'
       | 'execution_type'
+      | 'execution_mode'
       | 'script_command'
       | 'next_run'
       | 'status'
@@ -1911,6 +1920,10 @@ export function updateTask(
     fields.push('execution_type = ?');
     values.push(updates.execution_type);
   }
+  if (updates.execution_mode !== undefined) {
+    fields.push('execution_mode = ?');
+    values.push(updates.execution_mode);
+  }
   if (updates.script_command !== undefined) {
     fields.push('script_command = ?');
     values.push(updates.script_command);
@@ -1934,6 +1947,16 @@ export function updateTask(
   db.prepare(
     `UPDATE scheduled_tasks SET ${fields.join(', ')} WHERE id = ?`,
   ).run(...values);
+}
+
+export function updateTaskWorkspace(
+  id: string,
+  workspaceJid: string,
+  workspaceFolder: string,
+): void {
+  db.prepare(
+    'UPDATE scheduled_tasks SET workspace_jid = ?, workspace_folder = ? WHERE id = ?',
+  ).run(workspaceJid, workspaceFolder, id);
 }
 
 export function deleteTask(id: string): void {
@@ -2440,6 +2463,10 @@ export function deleteGroupData(jid: string, folder: string): void {
     db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
     // 6. 删除 pin 记录
     db.prepare('DELETE FROM user_pinned_groups WHERE jid = ?').run(jid);
+    // 7. 清除定时任务的工作区关联（任务本身不删，只断开绑定）
+    db.prepare(
+      'UPDATE scheduled_tasks SET workspace_jid = NULL, workspace_folder = NULL WHERE workspace_jid = ?',
+    ).run(jid);
   });
   tx();
 }

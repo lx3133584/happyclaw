@@ -1559,6 +1559,35 @@ export function createFeishuConnection(
       };
 
       try {
+        // Detect pre-built Feishu interactive card JSON — send directly without wrapping
+        if (text.startsWith('{"type":"interactive"')) {
+          try {
+            const parsed = JSON.parse(text);
+            if (parsed.type === 'interactive' && parsed.card) {
+              const lastMsgId = lastMessageIdByChat.get(chatId);
+              if (lastMsgId) {
+                await client.im.message.reply({
+                  path: { message_id: lastMsgId },
+                  data: { content: text, msg_type: 'interactive' },
+                });
+              } else {
+                await client.im.v1.message.create({
+                  params: { receive_id_type: 'chat_id' },
+                  data: {
+                    receive_id: chatId,
+                    msg_type: 'interactive',
+                    content: text,
+                  },
+                });
+              }
+              clearAckReaction();
+              return;
+            }
+          } catch {
+            // Not valid card JSON, fall through to normal handling
+          }
+        }
+
         // Count markdown tables to decide format upfront — Feishu cards have a table limit
         // Each table has exactly one separator row (e.g. |---|---|), so counting those = table count
         const tableCount = (text.match(/^\|[\s:-]+\|/gm) || []).length;

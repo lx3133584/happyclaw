@@ -269,7 +269,7 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
   return result;
 }
 
-function removeFlowArtifacts(folder: string): void {
+export function removeFlowArtifacts(folder: string): void {
   fs.rmSync(path.join(GROUPS_DIR, folder), { recursive: true, force: true });
   fs.rmSync(path.join(DATA_DIR, 'sessions', folder), {
     recursive: true,

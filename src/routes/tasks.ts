@@ -2,8 +2,12 @@
 
 import { Hono } from 'hono';
 import * as crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
+import fs from 'fs';
+import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
+import { sdkQuery } from '../sdk-query.js';
+import { GROUPS_DIR } from '../config.js';
+import { removeFlowArtifacts } from './groups.js';
 import type { Variables } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { TaskCreateSchema, TaskPatchSchema } from '../schemas.js';
@@ -17,6 +21,8 @@ import {
   getTaskRunLogs,
   getRegisteredGroup,
   getAllRegisteredGroups,
+  getUserHomeGroup,
+  deleteGroupData,
 } from '../db.js';
 import type { AuthUser } from '../types.js';
 import { TIMEZONE } from '../config.js';
@@ -36,6 +42,10 @@ tasksRoutes.get('/', authMiddleware, (c) => {
   const authUser = c.get('user') as AuthUser;
   const allGroups = getAllRegisteredGroups();
   const tasks = getAllTasks().filter((task) => {
+    // Host-mode tasks are only visible to admin
+    if (task.execution_mode === 'host' && authUser.role !== 'admin') {
+      return false;
+    }
     const group = allGroups[task.chat_jid];
     // Conservative: if group can't be resolved, only admin can see (may be orphaned task)
     if (!group) return authUser.role === 'admin';
@@ -60,25 +70,36 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
   }
 
   const {
-    group_folder,
-    chat_jid,
     prompt,
     schedule_type,
     schedule_value,
-    context_mode,
     execution_type,
     script_command,
     notify_channels,
   } = validation.data;
-  const group = getRegisteredGroup(chat_jid);
+  const authUser = c.get('user') as AuthUser;
+
+  // Auto-resolve group_folder/chat_jid from user's home group if not provided
+  let groupFolder = validation.data.group_folder;
+  let chatJid = validation.data.chat_jid;
+  if (!groupFolder || !chatJid) {
+    const homeGroup = getUserHomeGroup(authUser.id);
+    if (!homeGroup) {
+      return c.json({ error: 'User has no home group' }, 400);
+    }
+    groupFolder = groupFolder || homeGroup.folder;
+    chatJid = chatJid || homeGroup.jid;
+  }
+
+  const group = getRegisteredGroup(chatJid);
   if (!group) return c.json({ error: 'Group not found' }, 404);
-  if (group.folder !== group_folder) {
+  if (group.folder !== groupFolder) {
     return c.json(
       { error: 'group_folder does not match chat_jid group folder' },
       400,
     );
   }
-  const authUser = c.get('user') as AuthUser;
+
   if (!canAccessGroup({ id: authUser.id, role: authUser.role }, group)) {
     return c.json({ error: 'Group not found' }, 404);
   }
@@ -95,15 +116,33 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
     return c.json({ error: '只有管理员可以创建脚本类型任务' }, 403);
   }
 
+  // Determine execution_mode
+  let taskExecutionMode: 'host' | 'container';
+  if (authUser.role === 'admin') {
+    taskExecutionMode = validation.data.execution_mode || 'host';
+  } else {
+    if (validation.data.execution_mode === 'host') {
+      return c.json({ error: '只有管理员可以创建宿主机任务' }, 403);
+    }
+    taskExecutionMode = 'container';
+  }
+
   const taskId = crypto.randomUUID();
   const now = new Date().toISOString();
 
   let nextRun: string;
   if (schedule_type === 'cron') {
-    nextRun =
-      CronExpressionParser.parse(schedule_value, { tz: TIMEZONE })
+    try {
+      const cronNext = CronExpressionParser.parse(schedule_value, { tz: TIMEZONE })
         .next()
-        .toISOString() ?? new Date().toISOString();
+        .toISOString();
+      if (!cronNext) {
+        return c.json({ error: 'Cron expression produced no next run time' }, 400);
+      }
+      nextRun = cronNext;
+    } catch {
+      return c.json({ error: 'Invalid cron expression' }, 400);
+    }
   } else if (schedule_type === 'interval') {
     nextRun = new Date(Date.now() + parseInt(schedule_value, 10)).toISOString();
   } else {
@@ -113,13 +152,14 @@ tasksRoutes.post('/', authMiddleware, async (c) => {
 
   createTask({
     id: taskId,
-    group_folder,
-    chat_jid,
+    group_folder: groupFolder,
+    chat_jid: chatJid,
     prompt: prompt || '',
     schedule_type,
     schedule_value,
-    context_mode: context_mode || 'isolated',
+    context_mode: validation.data.context_mode || 'group',
     execution_type: execType,
+    execution_mode: taskExecutionMode,
     script_command: script_command ?? null,
     next_run: nextRun,
     status: 'active',
@@ -170,6 +210,11 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
     return c.json({ error: '只有管理员可以创建或修改脚本类型任务' }, 403);
   }
 
+  // Only admin can set execution_mode to 'host'
+  if (validation.data.execution_mode === 'host' && authUser.role !== 'admin') {
+    return c.json({ error: '只有管理员可以设置宿主机执行模式' }, 403);
+  }
+
   // Auto-recalculate next_run when schedule changes (avoid pulling cron-parser into frontend)
   const patchData = { ...validation.data };
   if (patchData.schedule_type !== undefined || patchData.schedule_value !== undefined) {
@@ -179,7 +224,7 @@ tasksRoutes.patch('/:id', authMiddleware, async (c) => {
       if (schedType === 'cron') {
         patchData.next_run = CronExpressionParser.parse(schedValue, { tz: TIMEZONE })
           .next()
-          .toISOString() ?? new Date().toISOString();
+          .toISOString() || new Date().toISOString();
       } else if (schedType === 'interval') {
         const ms = parseInt(schedValue, 10);
         if (!Number.isFinite(ms) || ms <= 0) {
@@ -223,6 +268,29 @@ tasksRoutes.delete('/:id', authMiddleware, (c) => {
       );
     }
   }
+  // Clean up dedicated workspace if exists
+  if (existing.workspace_jid && existing.workspace_folder) {
+    const wsGroup = getRegisteredGroup(existing.workspace_jid);
+    if (wsGroup) {
+      deleteGroupData(existing.workspace_jid, existing.workspace_folder);
+    }
+    // Remove all flow artifacts (groups/, sessions/, ipc/, env/, memory/)
+    removeFlowArtifacts(existing.workspace_folder);
+    const deps = getWebDeps();
+    if (deps) {
+      delete deps.getRegisteredGroups()[existing.workspace_jid];
+      delete deps.getSessions()[existing.workspace_folder];
+    }
+    logger.info(
+      {
+        taskId: id,
+        workspaceJid: existing.workspace_jid,
+        workspaceFolder: existing.workspace_folder,
+      },
+      'Task workspace deleted',
+    );
+  }
+
   deleteTask(id);
   return c.json({ success: true });
 });
@@ -287,8 +355,177 @@ tasksRoutes.get('/:id/logs', authMiddleware, (c) => {
   return c.json({ logs });
 });
 
+/** Build the AI parse prompt for a task description */
+function buildParsePrompt(description: string): string {
+  const now = new Date();
+  return `你是一个任务调度解析器。用户会用自然语言描述他们想要创建的定时任务，你需要解析出结构化的任务参数。
+
+当前时间: ${now.toISOString()}
+当前时区: ${TIMEZONE}
+
+用户描述: "${description}"
+
+请返回一个 JSON 对象（不要包含任何其他文字），包含以下字段：
+- "prompt": string — 任务要执行的 prompt（精炼用户的意图，作为 Agent 的指令）
+- "schedule_type": "cron" | "interval" | "once" — 调度类型
+- "schedule_value": string — 调度值：
+  - cron 类型: cron 表达式（推荐 5 段：分 时 日 月 周，也支持 6 段含秒）
+  - interval 类型: 毫秒数字符串（如 "3600000" 表示 1 小时）
+  - once 类型: ISO 8601 日期时间字符串
+- "context_mode": "group" | "isolated" — 上下文模式（大多数情况推荐 "group"）
+- "summary": string — 用一句话解释你的理解（中文）
+
+注意：
+- cron 表达式中的时间为北京时间（UTC+8）
+- 推荐使用 5 段格式：分 时 日 月 星期
+- 支持特殊字符：*/n（步长）、a-b（范围）、a,b,c（列表）、L（最后）、W（工作日）、#（第N个）
+- 支持预定义表达式：@daily, @hourly, @weekly, @monthly, @yearly
+- "每天早上 9 点" → cron "0 9 * * *"
+- "每小时" → interval "3600000"
+- "每 30 分钟" → interval "1800000"
+- "明天下午 3 点" → once，计算出具体的 ISO 时间
+- "每周一早上 10 点" → cron "0 10 * * 1"
+- "每月最后一天" → cron "0 0 L * *"
+- "每 5 分钟" → cron "*/5 * * * *"
+
+只返回 JSON，不要返回其他任何内容。`;
+}
+
+/** Parse AI response text into structured task params */
+function parseAiResult(
+  result: string,
+  description: string,
+): { prompt: string; schedule_type: string; schedule_value: string; summary: string } | null {
+  try {
+    let jsonStr = result;
+    const fenced = result.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenced) jsonStr = fenced[1].trim();
+    const parsed = JSON.parse(jsonStr);
+    return {
+      prompt: parsed.prompt || description,
+      schedule_type: parsed.schedule_type || 'cron',
+      schedule_value: parsed.schedule_value || '',
+      summary: parsed.summary || '',
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Parse natural language task description into structured task parameters using Claude CLI.
+ * AI create: immediately create task in 'parsing' status, resolve schedule in background.
+ */
+tasksRoutes.post('/ai', authMiddleware, async (c) => {
+  const authUser = c.get('user') as AuthUser;
+  const body = await c.req.json().catch(() => ({}));
+  const description = typeof body.description === 'string' ? body.description.trim() : '';
+  if (!description) {
+    return c.json({ error: '请输入任务描述' }, 400);
+  }
+  const notifyChannels: string[] | null = body.notify_channels ?? null;
+
+  // Resolve home group
+  const homeGroup = getUserHomeGroup(authUser.id);
+  if (!homeGroup) return c.json({ error: 'Home group not found' }, 400);
+
+  const taskId = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  // Determine execution_mode
+  const taskExecutionMode = authUser.role === 'admin' ? 'host' : 'container';
+
+  // Create task immediately with 'parsing' status and description as prompt
+  createTask({
+    id: taskId,
+    group_folder: homeGroup.folder,
+    chat_jid: homeGroup.jid,
+    prompt: description,
+    schedule_type: 'cron',
+    schedule_value: '0 0 * * *', // placeholder, will be updated after parsing
+    context_mode: 'group',
+    execution_type: 'agent',
+    execution_mode: taskExecutionMode,
+    script_command: null,
+    next_run: null,
+    status: 'parsing',
+    created_at: now,
+    created_by: authUser.id,
+    notify_channels: notifyChannels,
+  });
+
+  logger.info({ taskId, description: description.slice(0, 80) }, 'AI task created, parsing in background');
+
+  // Background: parse with SDK and update task
+  void (async () => {
+    try {
+      const parsePrompt = buildParsePrompt(description);
+      const model = process.env.RECALL_MODEL || undefined;
+      const result = await sdkQuery(parsePrompt, { model, timeout: 60_000 });
+
+      if (!result) {
+        updateTask(taskId, {
+          status: 'paused',
+          prompt: description,
+        });
+        logger.warn({ taskId }, 'AI parse returned null, task paused');
+        return;
+      }
+
+      const parsed = parseAiResult(result, description);
+      if (!parsed || !parsed.schedule_value) {
+        updateTask(taskId, {
+          status: 'paused',
+          prompt: description,
+        });
+        logger.warn({ taskId }, 'AI parse result invalid, task paused');
+        return;
+      }
+
+      // Compute next_run from parsed schedule
+      let nextRun: string | null = null;
+      try {
+        if (parsed.schedule_type === 'cron') {
+          nextRun = CronExpressionParser.parse(parsed.schedule_value, { tz: TIMEZONE })
+            .next()
+            .toISOString();
+        } else if (parsed.schedule_type === 'interval') {
+          nextRun = new Date(Date.now() + parseInt(parsed.schedule_value, 10)).toISOString();
+        } else {
+          nextRun = new Date(parsed.schedule_value).toISOString();
+        }
+      } catch {
+        // Invalid schedule, keep paused
+        updateTask(taskId, {
+          status: 'paused',
+          prompt: parsed.prompt,
+        });
+        logger.warn({ taskId, scheduleValue: parsed.schedule_value }, 'AI parsed schedule invalid, task paused');
+        return;
+      }
+
+      updateTask(taskId, {
+        prompt: parsed.prompt,
+        schedule_type: parsed.schedule_type as 'cron' | 'interval' | 'once',
+        schedule_value: parsed.schedule_value,
+        next_run: nextRun,
+        status: 'active',
+      });
+
+      logger.info(
+        { taskId, scheduleType: parsed.schedule_type, scheduleValue: parsed.schedule_value },
+        'AI task parse complete, activated',
+      );
+    } catch (err) {
+      logger.error({ taskId, err }, 'AI task background parse failed');
+      updateTask(taskId, { status: 'paused' });
+    }
+  })().catch((err) => logger.error({ taskId, err }, 'Unhandled AI task parse error'));
+
+  return c.json({ success: true, taskId });
+});
+
+/**
+ * Parse natural language task description (synchronous, kept for backward compat).
  */
 tasksRoutes.post('/parse', authMiddleware, async (c) => {
   const body = await c.req.json().catch(() => ({}));
@@ -297,85 +534,20 @@ tasksRoutes.post('/parse', authMiddleware, async (c) => {
     return c.json({ error: '请输入任务描述' }, 400);
   }
 
-  const now = new Date();
-  const tzOffset = TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const prompt = `你是一个任务调度解析器。用户会用自然语言描述他们想要创建的定时任务，你需要解析出结构化的任务参数。
-
-当前时间: ${now.toISOString()}
-当前时区: ${tzOffset}
-
-用户描述: "${description}"
-
-请返回一个 JSON 对象（不要包含任何其他文字），包含以下字段：
-- "prompt": string — 任务要执行的 prompt（精炼用户的意图，作为 Agent 的指令）
-- "schedule_type": "cron" | "interval" | "once" — 调度类型
-- "schedule_value": string — 调度值：
-  - cron 类型: cron 表达式（5 段，如 "0 9 * * *"）
-  - interval 类型: 毫秒数字符串（如 "3600000" 表示 1 小时）
-  - once 类型: ISO 8601 日期时间字符串
-- "context_mode": "group" | "isolated" — 上下文模式（大多数情况推荐 "isolated"）
-- "summary": string — 用一句话解释你的理解（中文）
-
-注意：
-- cron 表达式使用 5 段格式：分 时 日 月 星期
-- "每天早上 9 点" → cron "0 9 * * *"
-- "每小时" → interval "3600000"
-- "每 30 分钟" → interval "1800000"
-- "明天下午 3 点" → once，计算出具体的 ISO 时间
-- "每周一早上 10 点" → cron "0 10 * * 1"
-
-只返回 JSON，不要返回其他任何内容。`;
-
   try {
-    const result = await new Promise<string | null>((resolve) => {
-      const model = process.env.RECALL_MODEL || '';
-      const args = ['--print'];
-      if (model) args.push('--model', model);
-
-      const child = execFile(
-        'claude',
-        args,
-        {
-          timeout: 30000,
-          maxBuffer: 1024 * 1024,
-          env: { ...process.env, CLAUDECODE: '' },
-        },
-        (err, stdout, stderr) => {
-          if (err) {
-            logger.warn(
-              { err: (err as Error).message?.slice(0, 200), stderr: stderr?.slice(0, 300) },
-              'task-parse: Claude CLI failed',
-            );
-            resolve(null);
-            return;
-          }
-          resolve(stdout.trim() || null);
-        },
-      );
-      child.stdin?.write(prompt);
-      child.stdin?.end();
-    });
+    const model = process.env.RECALL_MODEL || undefined;
+    const result = await sdkQuery(buildParsePrompt(description), { model, timeout: 30_000 });
 
     if (!result) {
       return c.json({ error: 'AI 解析失败，请重试或切换到手动模式' }, 502);
     }
 
-    // Extract JSON from response (may be wrapped in ```json ... ```)
-    let jsonStr = result;
-    const fenced = result.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenced) jsonStr = fenced[1].trim();
+    const parsed = parseAiResult(result, description);
+    if (!parsed) {
+      return c.json({ error: 'AI 返回格式异常，请重试或切换到手动模式' }, 502);
+    }
 
-    const parsed = JSON.parse(jsonStr);
-    return c.json({
-      success: true,
-      parsed: {
-        prompt: parsed.prompt || description,
-        schedule_type: parsed.schedule_type || 'cron',
-        schedule_value: parsed.schedule_value || '',
-        context_mode: parsed.context_mode || 'isolated',
-        summary: parsed.summary || '',
-      },
-    });
+    return c.json({ success: true, parsed });
   } catch (err) {
     logger.warn({ err }, 'task-parse: failed to parse AI response');
     return c.json({ error: 'AI 返回格式异常，请重试或切换到手动模式' }, 502);

@@ -8,6 +8,8 @@ import { Hono } from 'hono';
 
 import { DATA_DIR } from '../config.js';
 import { getUserHomeGroup } from '../db.js';
+import { getClaudeProviderConfig } from '../runtime-config.js';
+import { sdkQuery } from '../sdk-query.js';
 import { logger } from '../logger.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
@@ -63,14 +65,14 @@ async function checkCapabilities(): Promise<{
     };
   }
 
-  const [gh, claude] = await Promise.all([
+  const [gh] = await Promise.all([
     execFileAsync('gh', ['auth', 'status'], { timeout: 5000 })
       .then(() => true)
       .catch(() => false),
-    execFileAsync('claude', ['--version'], { timeout: 5000 })
-      .then(() => true)
-      .catch(() => false),
   ]);
+  // Claude availability is determined by provider config, not CLI presence
+  const providerConfig = getClaudeProviderConfig();
+  const claude = !!(providerConfig.anthropicApiKey || providerConfig.claudeCodeOauthToken || providerConfig.claudeOAuthCredentials);
 
   // Get gh username if available
   let ghUsername: string | null = null;
@@ -339,43 +341,13 @@ bugReportRoutes.post('/generate', authMiddleware, async (c) => {
   const prompt = buildGeneratePrompt(description, systemInfo, logs, screenshots?.length || 0);
 
   try {
-    const result = await new Promise<string | null>((resolve) => {
-      const model = process.env.RECALL_MODEL || '';
-      const args = ['--print'];
-      if (model) args.push('--model', model);
+    logger.info(
+      { promptLen: prompt.length, userId: user.id },
+      'bug-report: invoking Claude SDK',
+    );
 
-      logger.info(
-        { promptLen: prompt.length, userId: user.id },
-        'bug-report: invoking claude --print',
-      );
-
-      const child = execFile(
-        'claude',
-        args,
-        {
-          timeout: 60000,
-          maxBuffer: 2 * 1024 * 1024,
-          env: { ...process.env, CLAUDECODE: '' },
-        },
-        (err, stdout, stderr) => {
-          if (err) {
-            logger.warn(
-              {
-                message: (err as Error).message?.slice(0, 200),
-                stderr: stderr?.slice(0, 300),
-              },
-              'bug-report: claude CLI failed',
-            );
-            resolve(null);
-            return;
-          }
-          resolve(stdout.trim() || null);
-        },
-      );
-
-      child.stdin?.write(prompt);
-      child.stdin?.end();
-    });
+    const model = process.env.RECALL_MODEL || undefined;
+    const result = await sdkQuery(prompt, { model, timeout: 60_000 });
 
     if (!result) {
       const fallback = buildFallbackReport(description, systemInfo, logs);

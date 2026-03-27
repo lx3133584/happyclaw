@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTasksStore } from '../stores/tasks';
-import { useChatStore } from '../stores/chat';
 import { useAuthStore } from '../stores/auth';
+import { useGroupsStore } from '../stores/groups';
 import { TaskCard } from '../components/tasks/TaskCard';
 import { CreateTaskForm } from '../components/tasks/CreateTaskForm';
 import { Plus, RefreshCw, Clock, X } from 'lucide-react';
@@ -12,35 +12,37 @@ import { Button } from '@/components/ui/button';
 
 export function TasksPage() {
   const { tasks, loading, error, loadTasks, createTask, updateTaskStatus, deleteTask, runTaskNow } = useTasksStore();
-  const { groups, loadGroups } = useChatStore();
   const { user } = useAuthStore();
   const [showCreateForm, setShowCreateForm] = useState(false);
   const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
     loadTasks();
-    loadGroups();
-  }, [loadTasks, loadGroups]);
+  }, [loadTasks]);
+
+  // Poll while any task is in 'parsing' state so UI updates when done
+  const hasParsing = tasks.some((t) => t.status === 'parsing');
+  useEffect(() => {
+    if (!hasParsing) return;
+    const interval = setInterval(loadTasks, 3000);
+    return () => clearInterval(interval);
+  }, [hasParsing, loadTasks]);
 
   const handleCreateTask = async (data: {
-    groupFolder: string;
-    chatJid: string;
     prompt: string;
     scheduleType: 'cron' | 'interval' | 'once';
     scheduleValue: string;
-    contextMode: 'group' | 'isolated';
     executionType: 'agent' | 'script';
+    executionMode?: 'host' | 'container';
     scriptCommand: string;
     notifyChannels: string[] | null;
   }) => {
     await createTask(
-      data.groupFolder,
-      data.chatJid,
       data.prompt,
       data.scheduleType,
       data.scheduleValue,
-      data.contextMode,
       data.executionType,
+      data.executionMode,
       data.scriptCommand,
       data.notifyChannels,
     );
@@ -60,18 +62,12 @@ export function TasksPage() {
   };
 
   const handleDelete = async (id: string) => {
-    if (confirm('确定要删除此任务吗？此操作不可撤销。')) {
+    if (confirm('确定要删除此任务吗？关联的工作区也会被删除，此操作不可撤销。')) {
       await deleteTask(id);
+      // Refresh sidebar — workspace was deleted along with the task
+      useGroupsStore.getState().loadGroups();
     }
   };
-
-  const groupsList = Object.entries(groups).map(([jid, group]) => ({
-    jid,
-    name: group.name,
-    folder: group.folder,
-  }));
-
-  const homeFolder = Object.values(groups).find((g) => g.is_my_home)?.folder;
 
   const activeTasks = tasks.filter((t) => t.status === 'active');
   const pausedTasks = tasks.filter((t) => t.status === 'paused');
@@ -184,11 +180,9 @@ export function TasksPage() {
 
       {showCreateForm && (
         <CreateTaskForm
-          groups={groupsList}
           onSubmit={handleCreateTask}
-          onClose={() => setShowCreateForm(false)}
+          onClose={() => { setShowCreateForm(false); loadTasks(); }}
           isAdmin={isAdmin}
-          homeFolder={homeFolder}
         />
       )}
     </div>

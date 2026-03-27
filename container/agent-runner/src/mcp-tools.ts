@@ -427,6 +427,11 @@ EXECUTION TYPE:
 \u2022 "agent" (default): Task runs as a full Claude Agent with access to all tools. Consumes API tokens.
 \u2022 "script" (admin only): Task runs a shell command directly on the host. Zero API token cost. Use for deterministic tasks like health checks, data collection, cURL calls, or cron-like scripts.
 
+EXECUTION MODE:
+\u2022 "host": Task runs directly on the host machine. Admin only.
+\u2022 "container" (default for non-admin): Task runs in a Docker container.
+Each agent task automatically gets its own dedicated workspace.
+
 CONTEXT MODE (agent mode only) - Choose based on task type:
 \u2022 "group": Task runs in the group's conversation context, with access to chat history.
 \u2022 "isolated": Task runs in a fresh session with no conversation history.
@@ -470,11 +475,17 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
           .describe(
             'Shell command to execute (required for script mode). Runs in the group workspace directory.',
           ),
+        execution_mode: z
+          .enum(['host', 'container'])
+          .optional()
+          .describe(
+            'Execution mode: host runs directly on the server, container runs in Docker isolation',
+          ),
         context_mode: z
           .enum(['group', 'isolated'])
-          .default('isolated')
+          .default('group')
           .describe(
-            '(agent mode only) isolated=fresh session (recommended), group=runs with chat history (may block on active sessions)',
+            '(agent mode only) group=runs with persistent workspace context (recommended), isolated=fresh session each time',
           ),
         target_group_jid: z
           .string()
@@ -524,7 +535,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         // Validate schedule_value before writing IPC
         if (args.schedule_type === 'cron') {
           try {
-            CronExpressionParser.parse(args.schedule_value);
+            CronExpressionParser.parse(args.schedule_value, { tz: process.env.TZ || 'Asia/Shanghai' });
           } catch {
             return {
               content: [
@@ -581,6 +592,9 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         };
         if (execType === 'script') {
           data.script_command = args.script_command;
+        }
+        if (args.execution_mode) {
+          data.execution_mode = args.execution_mode;
         }
         const filename = writeIpcFile(TASKS_DIR, data);
         const modeLabel = execType === 'script' ? 'script' : 'agent';

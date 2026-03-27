@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, Loader2, Pencil, RefreshCw, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Check, Pencil, X } from 'lucide-react';
 import { ScheduledTask, useTasksStore } from '../../stores/tasks';
 import { showToast } from '../../utils/toast';
+import { INTERVAL_UNITS, formatInterval, decomposeInterval, toggleNotifyChannel } from '../../utils/task-utils';
+import { useConnectedChannels } from '../../hooks/useConnectedChannels';
 
 const CHANNEL_LABELS: Record<string, string> = {
   feishu: '飞书',
@@ -15,10 +18,9 @@ interface TaskDetailProps {
 }
 
 export function TaskDetail({ task }: TaskDetailProps) {
-  const { logs, loadLogs, updateTask, runningTaskIds } = useTasksStore();
-  const taskLogs = logs[task.id] || [];
-  const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
-  const isRunning = runningTaskIds.has(task.id);
+  const { updateTask } = useTasksStore();
+
+  const connectedChannels = useConnectedChannels();
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -27,15 +29,16 @@ export function TaskDetail({ task }: TaskDetailProps) {
     script_command: task.script_command || '',
     schedule_type: task.schedule_type,
     schedule_value: task.schedule_value,
-    context_mode: task.context_mode,
     notify_channels: task.notify_channels ?? null,
   });
 
-  useEffect(() => {
-    loadLogs(task.id);
-    pollRef.current = setInterval(() => loadLogs(task.id), 10000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [task.id, loadLogs]);
+  // Interval editing: decompose ms into number + unit
+  const initialInterval = useMemo(
+    () => decomposeInterval(task.schedule_value),
+    [task.schedule_value],
+  );
+  const [intervalNum, setIntervalNum] = useState(initialInterval.num);
+  const [intervalUnit, setIntervalUnit] = useState(initialInterval.unitMs);
 
   // Sync form when task prop changes (e.g. after save)
   useEffect(() => {
@@ -45,9 +48,11 @@ export function TaskDetail({ task }: TaskDetailProps) {
         script_command: task.script_command || '',
         schedule_type: task.schedule_type,
         schedule_value: task.schedule_value,
-        context_mode: task.context_mode,
         notify_channels: task.notify_channels ?? null,
       });
+      const decomposed = decomposeInterval(task.schedule_value);
+      setIntervalNum(decomposed.num);
+      setIntervalUnit(decomposed.unitMs);
     }
   }, [task, editing]);
 
@@ -60,10 +65,13 @@ export function TaskDetail({ task }: TaskDetailProps) {
         fields.script_command = editForm.script_command || null;
       if (editForm.schedule_type !== task.schedule_type)
         fields.schedule_type = editForm.schedule_type;
-      if (editForm.schedule_value !== task.schedule_value)
-        fields.schedule_value = editForm.schedule_value;
-      if (editForm.context_mode !== task.context_mode)
-        fields.context_mode = editForm.context_mode;
+      // For interval type, compute ms from number + unit
+      const effectiveValue =
+        editForm.schedule_type === 'interval' && intervalNum
+          ? String(parseInt(intervalNum, 10) * parseInt(intervalUnit, 10))
+          : editForm.schedule_value;
+      if (effectiveValue !== task.schedule_value)
+        fields.schedule_value = effectiveValue;
       // notify_channels: compare serialized
       const oldChannels = JSON.stringify(task.notify_channels ?? null);
       const newChannels = JSON.stringify(editForm.notify_channels);
@@ -88,31 +96,23 @@ export function TaskDetail({ task }: TaskDetailProps) {
       script_command: task.script_command || '',
       schedule_type: task.schedule_type,
       schedule_value: task.schedule_value,
-      context_mode: task.context_mode,
       notify_channels: task.notify_channels ?? null,
     });
+    const decomposed = decomposeInterval(task.schedule_value);
+    setIntervalNum(decomposed.num);
+    setIntervalUnit(decomposed.unitMs);
     setEditing(false);
   };
 
+  const connectedKeys = Object.keys(connectedChannels).filter(
+    (k) => connectedChannels[k],
+  );
+
   const toggleChannel = (ch: string) => {
-    setEditForm((prev) => {
-      const current = prev.notify_channels;
-      if (current === null) {
-        // Was "all" → switch to all except this one
-        const all = Object.keys(CHANNEL_LABELS);
-        return { ...prev, notify_channels: all.filter((c) => c !== ch) };
-      }
-      if (current.includes(ch)) {
-        const next = current.filter((c) => c !== ch);
-        return { ...prev, notify_channels: next.length === 0 ? [] : next };
-      }
-      const next = [...current, ch];
-      // If all selected, set to null (= all)
-      if (next.length === Object.keys(CHANNEL_LABELS).length) {
-        return { ...prev, notify_channels: null };
-      }
-      return { ...prev, notify_channels: next };
-    });
+    setEditForm((prev) => ({
+      ...prev,
+      notify_channels: toggleNotifyChannel(prev.notify_channels, ch, connectedKeys),
+    }));
   };
 
   const formatDate = (timestamp: string | null | undefined) => {
@@ -129,13 +129,18 @@ export function TaskDetail({ task }: TaskDetailProps) {
     });
   };
 
-  const formatDuration = (ms: number) => {
-    if (ms < 1000) return `${ms}ms`;
-    const seconds = Math.floor(ms / 1000);
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}m ${remainingSeconds}s`;
+  const scheduleLabel = () => {
+    const type = editing ? editForm.schedule_type : task.schedule_type;
+    if (type === 'cron') return 'Cron 表达式';
+    if (type === 'interval') return '执行间隔';
+    if (type === 'once') return '执行时间';
+    return '调度值';
+  };
+
+  const formatScheduleValue = (type: string, value: string) => {
+    if (type === 'interval') return formatInterval(value);
+    if (type === 'once') return formatDate(value);
+    return value; // cron — show raw expression
   };
 
   const isChannelSelected = (ch: string) => {
@@ -145,14 +150,39 @@ export function TaskDetail({ task }: TaskDetailProps) {
 
   const renderNotifyChannelsBadges = () => {
     const channels = task.notify_channels;
+    // null means all connected channels
     if (channels === null || channels === undefined) {
-      return <span className="text-sm text-foreground">所有渠道</span>;
+      const connectedKeys = Object.entries(connectedChannels)
+        .filter(([, v]) => v)
+        .map(([k]) => k);
+      return (
+        <div className="flex flex-wrap gap-1">
+          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
+            Web
+          </span>
+          {connectedKeys.map((key) => (
+            <span
+              key={key}
+              className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-brand-50 text-primary"
+            >
+              {CHANNEL_LABELS[key] || key}
+            </span>
+          ))}
+        </div>
+      );
     }
     if (channels.length === 0) {
-      return <span className="text-sm text-muted-foreground">仅 Web</span>;
+      return (
+        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
+          仅 Web
+        </span>
+      );
     }
     return (
       <div className="flex flex-wrap gap-1">
+        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
+          Web
+        </span>
         {channels.map((ch) => (
           <span
             key={ch}
@@ -203,7 +233,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
           {editing ? (
             <textarea
               value={editForm.script_command}
-              onChange={(e) => setEditForm({ ...editForm, script_command: e.target.value })}
+              onChange={(e) =>
+                setEditForm({ ...editForm, script_command: e.target.value })
+              }
               rows={3}
               maxLength={4096}
               className="w-full text-sm text-foreground bg-card px-3 py-2 rounded border border-border font-mono resize-none focus:outline-none focus:ring-1 focus:ring-primary"
@@ -226,7 +258,9 @@ export function TaskDetail({ task }: TaskDetailProps) {
         {editing ? (
           <textarea
             value={editForm.prompt}
-            onChange={(e) => setEditForm({ ...editForm, prompt: e.target.value })}
+            onChange={(e) =>
+              setEditForm({ ...editForm, prompt: e.target.value })
+            }
             rows={6}
             className="w-full text-sm text-foreground bg-card px-3 py-2 rounded border border-border resize-y min-h-[160px] max-h-[400px] overflow-y-auto focus:outline-none focus:ring-1 focus:ring-primary"
           />
@@ -254,7 +288,10 @@ export function TaskDetail({ task }: TaskDetailProps) {
             <select
               value={editForm.schedule_type}
               onChange={(e) =>
-                setEditForm({ ...editForm, schedule_type: e.target.value as 'cron' | 'interval' | 'once' })
+                setEditForm({
+                  ...editForm,
+                  schedule_type: e.target.value as 'cron' | 'interval' | 'once',
+                })
               }
               className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
             >
@@ -272,18 +309,59 @@ export function TaskDetail({ task }: TaskDetailProps) {
         </div>
 
         <div>
-          <div className="text-xs text-muted-foreground mb-1">调度值</div>
+          <div className="text-xs text-muted-foreground mb-1">
+            {scheduleLabel()}
+          </div>
           {editing ? (
-            <input
-              type="text"
-              value={editForm.schedule_value}
-              onChange={(e) => setEditForm({ ...editForm, schedule_value: e.target.value })}
-              className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border font-mono focus:outline-none focus:ring-1 focus:ring-primary"
-            />
+            <>
+              {editForm.schedule_type === 'interval' ? (
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    value={intervalNum}
+                    onChange={(e) => setIntervalNum(e.target.value)}
+                    className="flex-1 text-sm text-foreground bg-card px-2 py-1 rounded border border-border font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                    placeholder="数值"
+                  />
+                  <select
+                    value={intervalUnit}
+                    onChange={(e) => setIntervalUnit(e.target.value)}
+                    className="w-20 text-sm text-foreground bg-card px-2 py-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    {INTERVAL_UNITS.map((u) => (
+                      <option key={u.ms} value={String(u.ms)}>
+                        {u.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <input
+                  type="text"
+                  value={editForm.schedule_value}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, schedule_value: e.target.value })
+                  }
+                  className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              )}
+              {editForm.schedule_type === 'cron' && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  格式: 分 时 日 月 星期（北京时间）
+                </p>
+              )}
+            </>
           ) : (
-            <code className="text-sm text-foreground bg-card px-2 py-1 rounded border border-border">
-              {task.schedule_value}
-            </code>
+            <div className="text-sm text-foreground">
+              {task.schedule_type === 'cron' ? (
+                <code className="text-xs bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
+                  {task.schedule_value}
+                </code>
+              ) : (
+                formatScheduleValue(task.schedule_type, task.schedule_value)
+              )}
+            </div>
           )}
         </div>
 
@@ -303,29 +381,24 @@ export function TaskDetail({ task }: TaskDetailProps) {
           </div>
         )}
 
-        {task.execution_type !== 'script' && (
+        {task.execution_mode && (
           <div>
-            <div className="text-xs text-muted-foreground mb-1">上下文模式</div>
-            {editing ? (
-              <select
-                value={editForm.context_mode}
-                onChange={(e) =>
-                  setEditForm({ ...editForm, context_mode: e.target.value as 'group' | 'isolated' })
-                }
-                className="w-full text-sm text-foreground bg-card px-2 py-1 rounded border border-border focus:outline-none focus:ring-1 focus:ring-primary"
-              >
-                <option value="isolated">独立执行</option>
-                <option value="group">共享群组上下文</option>
-              </select>
-            ) : (
-              <div className="text-sm text-foreground">
-                {task.context_mode === 'group'
-                  ? '共享群组上下文'
-                  : task.context_mode === 'isolated'
-                    ? '独立执行'
-                    : task.context_mode}
-              </div>
-            )}
+            <div className="text-xs text-muted-foreground mb-1">执行模式</div>
+            <div className="text-sm text-foreground">
+              {task.execution_mode === 'host' ? '宿主机' : 'Docker 容器'}
+            </div>
+          </div>
+        )}
+
+        {task.workspace_folder && (
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">任务工作区</div>
+            <Link
+              to={`/chat/${task.workspace_folder}`}
+              className="text-sm text-primary hover:underline"
+            >
+              {task.workspace_folder}
+            </Link>
           </div>
         )}
 
@@ -345,105 +418,27 @@ export function TaskDetail({ task }: TaskDetailProps) {
                 <input type="checkbox" checked disabled className="rounded" />
                 Web
               </label>
-              {Object.entries(CHANNEL_LABELS).map(([key, label]) => (
-                <label key={key} className="inline-flex items-center gap-1 text-sm text-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={isChannelSelected(key)}
-                    onChange={() => toggleChannel(key)}
-                    className="rounded"
-                  />
-                  {label}
-                </label>
-              ))}
+              {Object.entries(CHANNEL_LABELS)
+                .filter(([key]) => connectedChannels[key])
+                .map(([key, label]) => (
+                  <label
+                    key={key}
+                    className="inline-flex items-center gap-1 text-sm text-foreground cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChannelSelected(key)}
+                      onChange={() => toggleChannel(key)}
+                      className="rounded"
+                    />
+                    {label}
+                  </label>
+                ))}
             </div>
           ) : (
             renderNotifyChannelsBadges()
           )}
         </div>
-
-        {task.last_result && (
-          <div className="col-span-1 md:col-span-2">
-            <div className="text-xs text-muted-foreground mb-1">最近结果</div>
-            <div className="text-sm text-foreground bg-card px-3 py-2 rounded border border-border whitespace-pre-wrap break-words">
-              {task.last_result}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Execution Logs */}
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-xs text-muted-foreground">执行日志</div>
-          <button
-            onClick={() => loadLogs(task.id)}
-            className="p-1 text-muted-foreground hover:text-primary hover:bg-brand-50 rounded transition-colors cursor-pointer"
-            title="刷新日志"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-          </button>
-        </div>
-        {isRunning && (
-          <div className="flex items-center gap-2 text-sm text-primary bg-brand-50 px-3 py-2.5 rounded border border-brand-200 mb-2">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            任务执行中，等待结果...
-          </div>
-        )}
-        {taskLogs.length === 0 && !isRunning ? (
-          <div className="text-sm text-muted-foreground bg-card px-3 py-4 rounded border border-border text-center">
-            暂无执行记录
-          </div>
-        ) : (
-          <div className="overflow-x-auto bg-card rounded border border-border">
-            <table className="min-w-full divide-y divide-border text-sm">
-              <thead className="bg-muted">
-                <tr>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                    运行时间
-                  </th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                    耗时
-                  </th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                    状态
-                  </th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
-                    结果
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {taskLogs.map((log) => (
-                  <tr key={log.id} className="hover:bg-muted/50">
-                    <td className="px-3 py-2 text-foreground whitespace-nowrap">
-                      {formatDate(log.run_at)}
-                    </td>
-                    <td className="px-3 py-2 text-foreground whitespace-nowrap">
-                      {formatDuration(log.duration_ms)}
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <span
-                        className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
-                          log.status === 'success'
-                            ? 'bg-green-100 text-green-600'
-                            : 'bg-red-100 text-red-600'
-                        }`}
-                      >
-                        {log.status === 'success' ? '成功' : '失败'}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-foreground max-w-xs truncate">
-                      {log.status === 'success'
-                        ? log.result || '-'
-                        : log.error || '未知错误'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
     </div>
   );
