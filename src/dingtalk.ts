@@ -236,10 +236,10 @@ function parseDingTalkChatId(
 ): { type: 'c2c' | 'group'; conversationId: string } | null {
   if (chatId.startsWith('dingtalk:c2c:')) {
     // Format: dingtalk:c2c:{senderStaffId}, extract senderStaffId
-    return { type: 'c2c', conversationId: chatId.slice(12) };
+    return { type: 'c2c', conversationId: chatId.slice(13) };
   }
   if (chatId.startsWith('dingtalk:group:')) {
-    return { type: 'group', conversationId: chatId.slice(14) };
+    return { type: 'group', conversationId: chatId.slice(15) };
   }
   // Legacy format without prefix
   if (chatId.startsWith('c2c:')) {

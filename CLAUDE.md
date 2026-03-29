@@ -666,7 +666,7 @@ make dev-web       # 仅启动前端
 make build         # 编译全部（后端 + 前端 + agent-runner）
 make start         # 一键启动生产环境
 make typecheck     # TypeScript 全量类型检查（后端 + 前端 + agent-runner）
-make test          # 单元测试（vitest，修改 channel-prefixes.ts 前必跑）
+make test          # 约束测试（vitest，重构前/后必跑，详见 §11）
 make format        # 格式化代码（prettier）
 make install       # 安装全部依赖并编译 agent-runner
 make clean         # 清理构建产物（dist/）
@@ -693,7 +693,28 @@ make help          # 列出所有可用的 make 命令
 
 每个项目有独立的 `package.json`、`tsconfig.json`、`node_modules/`。此外，`shared/` 目录存放跨三个项目的共享类型定义（如 `stream-event.ts`），构建时通过 `make sync-types` 同步到各项目。
 
-## 12. 常见变更指引
+### 约束测试工程（Phase 0）
+
+测试框架：vitest 4.1.1，配置在 `vitest.config.ts`。
+
+测试文件按故事组织（不是按函数），作为重构安全网：
+
+| 目录 | 覆盖范围 | 故事编号 |
+|------|---------|---------|
+| `tests/units/markdown.test.ts` | Markdown→纯文本转换 | D7, A4 |
+| `tests/units/text-chunk.test.ts` | 长消息分片 | A4 |
+| `tests/units/im-dedup.test.ts` | LRU 消息去重 | A10 |
+| `tests/units/jid-routing.test.ts` | JID 路由一致性 | D1 |
+| `tests/units/im-command-utils.test.ts` | IM 斜杠命令格式化 | A9 |
+| `tests/units/ipc-atomic.test.ts` | IPC 文件原子写入 | D3 |
+| `tests/channel-prefixes.test.ts` | 渠道前缀映射 | D1 |
+| `tests/helpers/im-utils.ts` | 测试工具（纯函数副本） | - |
+
+**重要约束**：
+- `make test` 必须在 Phase 2/3 重构前后都通过（行为不变性验证）
+- 修改 `channel-prefixes.ts`、`im-command-utils.ts`、IM 通道文件前必跑
+- 测试中的纯函数来自 `tests/helpers/im-utils.ts`（Phase 2 提取到 `src/im-utils.ts` 后切换导入源）
+- `ALL_IM_CHANNELS` 数组在 `tests/channel-prefixes.test.ts` 和 `tests/units/jid-routing.test.ts` 中定义，新增渠道时必须同步更新
 
 ### 新增 Web 设置项
 
