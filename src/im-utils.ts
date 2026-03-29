@@ -2,7 +2,6 @@
  * Shared IM utilities extracted from qq.ts / dingtalk.ts / wechat.ts
  * to eliminate code duplication.
  *
- * Phase 2 of the optimization plan.
  */
 
 // ── Markdown → Plain Text ────────────────────────────────

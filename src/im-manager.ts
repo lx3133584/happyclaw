@@ -317,7 +317,6 @@ class IMConnectionManager {
    */
   isChannelAvailableForJid(jid: string): boolean {
     const channelType = getChannelType(jid);
-    logger.debug({ jid, channelType }, 'isChannelAvailableForJid check');
     if (!channelType) return false;
     return !!this.findChannelForJid(jid, channelType);
   }
@@ -672,38 +671,14 @@ class IMConnectionManager {
     return false;
   }
 
-  /** Check if any user has an active QQ connection */
-  isAnyQQConnected(): boolean {
-    for (const conn of this.connections.values()) {
-      if (conn.channels.get('qq')?.isConnected()) return true;
-    }
-    return false;
-  }
-
   isWeChatConnected(userId: string): boolean {
     const conn = this.connections.get(userId);
     return conn?.channels.get('wechat')?.isConnected() ?? false;
   }
 
-  /** Check if any user has an active WeChat connection */
-  isAnyWeChatConnected(): boolean {
-    for (const conn of this.connections.values()) {
-      if (conn.channels.get('wechat')?.isConnected()) return true;
-    }
-    return false;
-  }
-
   isDingTalkConnected(userId: string): boolean {
     const conn = this.connections.get(userId);
     return conn?.channels.get('dingtalk')?.isConnected() ?? false;
-  }
-
-  /** Check if any user has an active DingTalk connection */
-  isAnyDingTalkConnected(): boolean {
-    for (const conn of this.connections.values()) {
-      if (conn.channels.get('dingtalk')?.isConnected()) return true;
-    }
-    return false;
   }
 
   /** Get the Feishu channel for a user (for direct access like syncGroups) */

@@ -4790,7 +4790,7 @@ async function processTaskIpc(
       break;
 
     case 'send_file':
-      logger.info(
+      logger.debug(
         { data, sourceGroup, isAdminHome, isHome },
         'processTaskIpc send_file reached',
       );
@@ -5657,13 +5657,13 @@ async function processAgentConversation(
             partialReply,
             effectiveGroup.folder,
           );
-          logger.info({ replySourceImJid, textLen: partialReply.length });
+          logger.info({ replySourceImJid, textLen: partialReply.length }, 'agent partial reply ready');
           const imSent = await sendImWithRetry(
             replySourceImJid,
             partialReply,
             localImagePaths,
           );
-          logger.info({ replySourceImJid, imSent });
+          logger.info({ replySourceImJid, imSent }, 'agent IM reply sent');
         } else {
           logger.warn(
             { chatJid, agentId },
@@ -6397,7 +6397,7 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
           { homeChatJid, agentId },
           'Agent IM restart: starting processAgentConversation',
         );
-        logger.info({ homeChatJid, agentId, taskId });
+        logger.info({ homeChatJid, agentId, taskId }, 'sub-agent task IPC received');
         try {
           await processAgentConversation(homeChatJid, agentId);
         } catch (err) {

@@ -445,24 +445,17 @@ export function createDingTalkConnection(
   }
 
   /**
-   * Send a C2C text message via the persistent chatbot API (oToMessages/batchSend).
-   * This is the correct API for proactive C2C messages — sessionWebhook is only
-   * for reply scenarios within the stream connection.
-   * Uses senderStaffId (enterprise user ID) which was stored when the user messaged us.
+   * Common helper: POST /v1.0/robot/oToMessages/batchSend
+   * Used by C2C text, file, and image message senders.
    */
-  async function sendViaPersistentAPI(
-    senderStaffId: string,
-    content: string,
+  async function batchSendToUser(
+    userIds: string[],
+    robotCode: string,
+    token: string,
+    msgKey: string,
+    msgParam: string,
   ): Promise<void> {
-    const token = await getAccessToken();
-    const robotCode = config.clientId;
-    const msgParam = JSON.stringify({ content });
-    const body = JSON.stringify({
-      robotCode,
-      userIds: [senderStaffId],
-      msgKey: 'sampleText',
-      msgParam,
-    });
+    const body = JSON.stringify({ robotCode, userIds, msgKey, msgParam });
     return new Promise<void>((resolve, reject) => {
       const req = https.request(
         {
@@ -482,26 +475,17 @@ export function createDingTalkConnection(
             if (res.statusCode && res.statusCode >= 400) {
               reject(
                 new Error(
-                  `DingTalk persistent API HTTP failed (${res.statusCode}): ${respBody}`,
+                  `DingTalk batchSend HTTP failed (${res.statusCode}): ${respBody}`,
                 ),
               );
               return;
             }
             try {
               const data = JSON.parse(respBody);
-              logger.info(
-                {
-                  statusCode: res.statusCode,
-                  errcode: data.errcode,
-                  errmsg: data.errmsg,
-                  processQueryKey: data.processQueryKey,
-                },
-                'DingTalk sendViaPersistentAPI response',
-              );
               if (data.errcode && data.errcode !== 0) {
                 reject(
                   new Error(
-                    `DingTalk persistent API error: ${data.errcode} ${data.errmsg}`,
+                    `DingTalk batchSend API error: ${data.errcode} ${data.errmsg}`,
                   ),
                 );
                 return;
@@ -521,14 +505,19 @@ export function createDingTalkConnection(
   }
 
   /**
-   * Send a reply via the sessionWebhook. Supports markdown for group chats.
+   * Send a C2C text message via the persistent chatbot API (oToMessages/batchSend).
+   * This is the correct API for proactive C2C messages — sessionWebhook is only
+   * for reply scenarios within the stream connection.
+   * Uses senderStaffId (enterprise user ID) which was stored when the user messaged us.
    */
-  async function sendDingTalkReply(
-    sessionWebhook: string,
+  async function sendViaPersistentAPI(
+    senderStaffId: string,
     content: string,
-    useMarkdown = false,
   ): Promise<void> {
-    await sendViaSessionWebhook(sessionWebhook, content, useMarkdown);
+    const token = await getAccessToken();
+    const robotCode = config.clientId;
+    const msgParam = JSON.stringify({ content });
+    await batchSendToUser([senderStaffId], robotCode, token, 'sampleText', msgParam);
   }
 
   /**
@@ -660,6 +649,75 @@ export function createDingTalkConnection(
   }
 
   /**
+   * Fetch a temporary download URL for a robot message file/image.
+   * POST /v1.0/robot/messageFiles/download → { downloadUrl }
+   */
+  async function fetchDingTalkDownloadUrl(
+    downloadCode: string,
+    robotCode: string,
+    token: string,
+  ): Promise<string> {
+    const downloadUrlResp = await new Promise<{ downloadUrl?: string }>(
+      (resolve, reject) => {
+        const body = JSON.stringify({ downloadCode, robotCode });
+        const req = https.request(
+          {
+            hostname: 'api.dingtalk.com',
+            path: '/v1.0/robot/messageFiles/download',
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-acs-dingtalk-access-token': token,
+            },
+          },
+          (res) => {
+            const statusCode = res.statusCode ?? 0;
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk: Buffer) => chunks.push(chunk));
+            res.on('end', () => {
+              const buf = Buffer.concat(chunks);
+              if (statusCode < 200 || statusCode >= 300) {
+                logger.warn(
+                  {
+                    statusCode,
+                    bodyUtf8: buf.toString('utf8').slice(0, 300),
+                  },
+                  'DingTalk download URL API non-2xx response',
+                );
+                reject(
+                  new Error(
+                    `DingTalk download URL API HTTP failed (${statusCode}): ${buf.toString('utf8').slice(0, 200)}`,
+                  ),
+                );
+                return;
+              }
+              try {
+                resolve(JSON.parse(buf.toString('utf8')));
+              } catch {
+                reject(
+                  new Error(
+                    `Invalid JSON from download URL API: ${buf.toString('utf8').slice(0, 200)}`,
+                  ),
+                );
+              }
+            });
+            res.on('error', reject);
+          },
+        );
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+      },
+    );
+
+    const downloadUrl = downloadUrlResp?.downloadUrl;
+    if (!downloadUrl) {
+      throw new Error('DingTalk download URL API returned no downloadUrl');
+    }
+    return downloadUrl;
+  }
+
+  /**
    * Download a DingTalk picture message using the downloadCode from the robot callback.
    * Step 1: POST /v1.0/robot/messageFiles/download → get downloadUrl
    * Step 2: GET downloadUrl → get actual image bytes
@@ -673,67 +731,11 @@ export function createDingTalkConnection(
       const token = await getAccessToken();
 
       // Step 1: Get temporary download URL
-      const downloadUrlResp = await new Promise<{ downloadUrl?: string }>(
-        (resolve, reject) => {
-          const body = JSON.stringify({ downloadCode, robotCode });
-          const req = https.request(
-            {
-              hostname: 'api.dingtalk.com',
-              path: '/v1.0/robot/messageFiles/download',
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-acs-dingtalk-access-token': token,
-              },
-            },
-            (res) => {
-              const statusCode = res.statusCode ?? 0;
-              const chunks: Buffer[] = [];
-              res.on('data', (chunk: Buffer) => chunks.push(chunk));
-              res.on('end', () => {
-                const buf = Buffer.concat(chunks);
-                if (statusCode < 200 || statusCode >= 300) {
-                  logger.warn(
-                    {
-                      statusCode,
-                      bodyUtf8: buf.toString('utf8').slice(0, 300),
-                    },
-                    'DingTalk download URL API non-2xx response',
-                  );
-                  reject(
-                    new Error(
-                      `DingTalk download URL API HTTP failed (${statusCode}): ${buf.toString('utf8').slice(0, 200)}`,
-                    ),
-                  );
-                  return;
-                }
-                try {
-                  resolve(JSON.parse(buf.toString('utf8')));
-                } catch {
-                  reject(
-                    new Error(
-                      `Invalid JSON from download URL API: ${buf.toString('utf8').slice(0, 200)}`,
-                    ),
-                  );
-                }
-              });
-              res.on('error', reject);
-            },
-          );
-          req.on('error', reject);
-          req.write(body);
-          req.end();
-        },
+      const downloadUrl = await fetchDingTalkDownloadUrl(
+        downloadCode,
+        robotCode,
+        token,
       );
-
-      const downloadUrl = downloadUrlResp?.downloadUrl;
-      if (!downloadUrl) {
-        logger.warn(
-          { downloadUrlResp },
-          'DingTalk download URL API returned no downloadUrl',
-        );
-        return null;
-      }
 
       // Step 2: Download the actual image from the temporary URL
       const buffer = await new Promise<Buffer>((resolve, reject) => {
@@ -820,60 +822,11 @@ export function createDingTalkConnection(
       const token = await getAccessToken();
 
       // Step 1: Get temporary download URL
-      const downloadUrlResp = await new Promise<{ downloadUrl?: string }>(
-        (resolve, reject) => {
-          const body = JSON.stringify({ downloadCode, robotCode });
-          const req = https.request(
-            {
-              hostname: 'api.dingtalk.com',
-              path: '/v1.0/robot/messageFiles/download',
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-acs-dingtalk-access-token': token,
-              },
-            },
-            (res) => {
-              const statusCode = res.statusCode ?? 0;
-              const chunks: Buffer[] = [];
-              res.on('data', (chunk: Buffer) => chunks.push(chunk));
-              res.on('end', () => {
-                const buf = Buffer.concat(chunks);
-                if (statusCode < 200 || statusCode >= 300) {
-                  reject(
-                    new Error(
-                      `DingTalk download URL API HTTP failed (${statusCode}): ${buf.toString('utf8').slice(0, 200)}`,
-                    ),
-                  );
-                  return;
-                }
-                try {
-                  resolve(JSON.parse(buf.toString('utf8')));
-                } catch {
-                  reject(
-                    new Error(
-                      `Invalid JSON from download URL API: ${buf.toString('utf8').slice(0, 200)}`,
-                    ),
-                  );
-                }
-              });
-              res.on('error', reject);
-            },
-          );
-          req.on('error', reject);
-          req.write(body);
-          req.end();
-        },
+      const downloadUrl = await fetchDingTalkDownloadUrl(
+        downloadCode,
+        robotCode,
+        token,
       );
-
-      const downloadUrl = downloadUrlResp?.downloadUrl;
-      if (!downloadUrl) {
-        logger.warn(
-          { downloadUrlResp },
-          'DingTalk file download: no downloadUrl',
-        );
-        return null;
-      }
 
       // Step 2: Download raw file bytes (no MIME check — any file type allowed)
       const buffer = await new Promise<Buffer>((resolve, reject) => {
@@ -1038,69 +991,8 @@ export function createDingTalkConnection(
   ): Promise<void> {
     try {
       const token = await getAccessToken();
-
-      // msgParam must be a JSON string with file info
-      // fileType is required by sampleFile (extension like "pdf", "png")
-      const msgParam = JSON.stringify({
-        mediaId,
-        fileName,
-        fileType,
-      });
-
-      const body = JSON.stringify({
-        robotCode,
-        userIds: [userId],
-        msgKey: 'sampleFile',
-        msgParam,
-      });
-
-      await new Promise<void>((resolve, reject) => {
-        const req = https.request(
-          {
-            hostname: 'api.dingtalk.com',
-            path: '/v1.0/robot/oToMessages/batchSend',
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-acs-dingtalk-access-token': token,
-            },
-          },
-          (res) => {
-            const chunks: Buffer[] = [];
-            res.on('data', (chunk: Buffer) => chunks.push(chunk));
-            res.on('end', () => {
-              const respBody = Buffer.concat(chunks).toString('utf8');
-              if (res.statusCode && res.statusCode >= 400) {
-                reject(
-                  new Error(
-                    `DingTalk batchSend HTTP failed (${res.statusCode}): ${respBody}`,
-                  ),
-                );
-                return;
-              }
-              try {
-                const data = JSON.parse(respBody);
-                if (data.errcode && data.errcode !== 0) {
-                  reject(
-                    new Error(
-                      `DingTalk API error: ${data.errcode} ${data.errmsg}`,
-                    ),
-                  );
-                  return;
-                }
-              } catch {
-                // Not JSON, ignore
-              }
-              resolve();
-            });
-            res.on('error', reject);
-          },
-        );
-        req.on('error', reject);
-        req.write(body);
-        req.end();
-      });
-
+      const msgParam = JSON.stringify({ mediaId, fileName, fileType });
+      await batchSendToUser([userId], robotCode, token, 'sampleFile', msgParam);
       logger.info({ userId, mediaId, fileName }, 'DingTalk file message sent');
     } catch (err) {
       logger.error(
@@ -1123,64 +1015,9 @@ export function createDingTalkConnection(
   ): Promise<void> {
     try {
       const token = await getAccessToken();
-
       // sampleImageMsg uses photoURL field (not mediaId) - DingTalk API quirk
       const msgParam = JSON.stringify({ photoURL: mediaId });
-
-      const body = JSON.stringify({
-        robotCode,
-        userIds: [userId],
-        msgKey: 'sampleImageMsg',
-        msgParam,
-      });
-
-      await new Promise<void>((resolve, reject) => {
-        const req = https.request(
-          {
-            hostname: 'api.dingtalk.com',
-            path: '/v1.0/robot/oToMessages/batchSend',
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-acs-dingtalk-access-token': token,
-            },
-          },
-          (res) => {
-            const chunks: Buffer[] = [];
-            res.on('data', (chunk: Buffer) => chunks.push(chunk));
-            res.on('end', () => {
-              const respBody = Buffer.concat(chunks).toString('utf8');
-              if (res.statusCode && res.statusCode >= 400) {
-                reject(
-                  new Error(
-                    `DingTalk image HTTP failed (${res.statusCode}): ${respBody}`,
-                  ),
-                );
-                return;
-              }
-              try {
-                const data = JSON.parse(respBody);
-                if (data.errcode && data.errcode !== 0) {
-                  reject(
-                    new Error(
-                      `DingTalk API error: ${data.errcode} ${data.errmsg}`,
-                    ),
-                  );
-                  return;
-                }
-              } catch {
-                // Not JSON, ignore
-              }
-              resolve();
-            });
-            res.on('error', reject);
-          },
-        );
-        req.on('error', reject);
-        req.write(body);
-        req.end();
-      });
-
+      await batchSendToUser([userId], robotCode, token, 'sampleImageMsg', msgParam);
       logger.info({ userId, mediaId, fileName }, 'DingTalk image message sent');
     } catch (err) {
       logger.error(
@@ -1529,7 +1366,7 @@ export function createDingTalkConnection(
             ? '配对成功！此聊天已连接到你的账号。'
             : '配对码无效或已过期，请在 Web 设置页重新生成。';
           if (data.sessionWebhook) {
-            await sendDingTalkReply(data.sessionWebhook, reply, isGroup);
+            await sendViaSessionWebhook(data.sessionWebhook, reply, isGroup);
           }
         } catch (err) {
           logger.error({ err, jid }, 'DingTalk pair attempt error');
@@ -1572,7 +1409,7 @@ export function createDingTalkConnection(
           if (reply) {
             const plainText = markdownToPlainText(reply);
             if (data.sessionWebhook) {
-              await sendDingTalkReply(data.sessionWebhook, plainText, isGroup);
+              await sendViaSessionWebhook(data.sessionWebhook, plainText, isGroup);
             }
             return;
           }
@@ -1677,12 +1514,8 @@ export function createDingTalkConnection(
         client.registerCallbackListener(
           TOPIC_ROBOT,
           async (downstream: DWClientDownStream) => {
-            // Debug: log all events
             logger.info(
-              {
-                dataLen: downstream.data?.length,
-                data: downstream.data,
-              },
+              { dataLen: downstream.data?.length },
               'DingTalk robot message received',
             );
 
@@ -1831,12 +1664,10 @@ export function createDingTalkConnection(
       const chunks = splitTextChunks(contentToSend, MSG_SPLIT_LIMIT);
 
       // Try markdown first, fall back to plain text on error.
-      let lastErr: unknown;
       for (const chunk of chunks) {
-        const contentToSend = convertToDingTalkMarkdown(chunk);
         const msgParam = JSON.stringify({
-          title: contentToSend.slice(0, 50),
-          text: contentToSend,
+          title: chunk.slice(0, 50),
+          text: chunk,
         });
         try {
           await sendViaGroupMessagesAPI(
@@ -1844,21 +1675,15 @@ export function createDingTalkConnection(
             'sampleMarkdown',
             msgParam,
           );
-        } catch (err) {
-          lastErr = err;
+        } catch {
           // Fall back to plain text
           const plainContent = markdownToPlainText(chunk);
           const plainMsgParam = JSON.stringify({ content: plainContent });
-          try {
-            await sendViaGroupMessagesAPI(
-              openConversationId,
-              'sampleText',
-              plainMsgParam,
-            );
-          } catch (plainErr) {
-            lastErr = plainErr;
-            throw plainErr;
-          }
+          await sendViaGroupMessagesAPI(
+            openConversationId,
+            'sampleText',
+            plainMsgParam,
+          );
         }
       }
 

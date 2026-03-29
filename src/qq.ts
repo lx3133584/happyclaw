@@ -19,6 +19,7 @@ import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
 import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
 import { detectImageMimeTypeStrict } from './image-detector.js';
+import { markdownToPlainText, splitTextChunks } from './im-utils.js';
 // ─── Constants ──────────────────────────────────────────────────
 
 const QQ_TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken';
@@ -100,73 +101,6 @@ interface QQWsPayload {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
-
-/**
- * Convert Markdown to QQ plain text.
- * QQ doesn't support Markdown natively, so strip formatting.
- */
-function markdownToPlainText(md: string): string {
-  let text = md;
-
-  // Code blocks: keep content, remove fences
-  text = text.replace(/```[\s\S]*?```/g, (match) => {
-    return match.replace(/^```\w*\n?/, '').replace(/\n?```$/, '');
-  });
-
-  // Inline code: remove backticks
-  text = text.replace(/`([^`]+)`/g, '$1');
-
-  // Links: [text](url) → text (url)
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
-
-  // Bold: **text** or __text__ → text
-  text = text.replace(/\*\*(.+?)\*\*/g, '$1');
-  text = text.replace(/__(.+?)__/g, '$1');
-
-  // Strikethrough: ~~text~~ → text
-  text = text.replace(/~~(.+?)~~/g, '$1');
-
-  // Italic: *text* → text
-  text = text.replace(/(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)/g, '$1');
-
-  // Headings: # text → text
-  text = text.replace(/^#{1,6}\s+(.+)$/gm, '$1');
-
-  return text;
-}
-
-/**
- * Split text into chunks at safe boundaries.
- */
-function splitTextChunks(text: string, limit: number): string[] {
-  if (text.length <= limit) return [text];
-
-  const chunks: string[] = [];
-  let remaining = text;
-
-  while (remaining.length > 0) {
-    if (remaining.length <= limit) {
-      chunks.push(remaining);
-      break;
-    }
-
-    let splitIdx = remaining.lastIndexOf('\n\n', limit);
-    if (splitIdx < limit * 0.3) {
-      splitIdx = remaining.lastIndexOf('\n', limit);
-    }
-    if (splitIdx < limit * 0.3) {
-      splitIdx = remaining.lastIndexOf(' ', limit);
-    }
-    if (splitIdx < limit * 0.3) {
-      splitIdx = limit;
-    }
-
-    chunks.push(remaining.slice(0, splitIdx));
-    remaining = remaining.slice(splitIdx).trimStart();
-  }
-
-  return chunks;
-}
 
 /**
  * Parse JID to determine chat type and extract openid.

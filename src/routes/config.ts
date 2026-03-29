@@ -1846,9 +1846,11 @@ configRoutes.post('/user-im/dingtalk/test', authMiddleware, async (c) => {
     // Try to get access token
     const token = await testClient.getAccessToken();
     if (!token) {
+      testClient.disconnect?.();
       return c.json({ error: 'Failed to obtain access token' }, 400);
     }
 
+    testClient.disconnect?.();
     return c.json({ success: true });
   } catch (err) {
     const message =

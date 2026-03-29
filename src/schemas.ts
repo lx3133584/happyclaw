@@ -38,7 +38,7 @@ export const TaskCreateSchema = z
     execution_mode: z.enum(['host', 'container']).optional(),
     script_command: z.string().max(4096).optional(),
     notify_channels: z
-      .array(z.enum(['feishu', 'telegram', 'qq', 'wechat']))
+      .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk']))
       .nullable()
       .optional(),
   })
