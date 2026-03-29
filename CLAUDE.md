@@ -707,6 +707,11 @@ make help          # 列出所有可用的 make 命令
 | `tests/units/jid-routing.test.ts` | JID 路由一致性 | D1 |
 | `tests/units/im-command-utils.test.ts` | IM 斜杠命令格式化 | A9 |
 | `tests/units/ipc-atomic.test.ts` | IPC 文件原子写入 | D3 |
+| `tests/units/user-isolation.test.ts` | 用户隔离（数据模型） | D2 |
+| `tests/units/oom-idle.test.ts` | OOM 恢复 + 空闲超时 | D4, D5 |
+| `tests/units/log-sanitize.test.ts` | 日志脱敏 | D7 |
+| `tests/units/group-chat.test.ts` | 群聊场景 | B1, B2, B5, B6 |
+| `tests/units/dm-integration.test.ts` | DM 集成 | A1, A2, A3, A5, A8 |
 | `tests/channel-prefixes.test.ts` | 渠道前缀映射 | D1 |
 | `tests/helpers/im-utils.ts` | 测试工具（纯函数副本） | - |
 
