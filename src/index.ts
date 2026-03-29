@@ -112,6 +112,7 @@ import {
   getUserTelegramConfig,
   getUserQQConfig,
   getUserWeChatConfig,
+  getUserDingTalkConfig,
   getSystemSettings,
   saveUserFeishuConfig,
   saveUserTelegramConfig,
@@ -122,6 +123,7 @@ import type {
   TelegramConnectConfig,
   QQConnectConfig,
   WeChatConnectConfig,
+  DingTalkConnectConfig,
 } from './im-manager.js';
 import { GroupQueue } from './group-queue.js';
 import { startSchedulerLoop, triggerTaskNow } from './task-scheduler.js';
@@ -185,7 +187,7 @@ const OOM_EXIT_RE = /code 137/;
  * Feed a stream event into a Feishu streaming card controller.
  * Centralizes the event → card mapping for both main and sub-agent handlers.
  */
-function feedStreamEventToCard(
+export function feedStreamEventToCard(
   session: StreamingCardController,
   se: StreamEvent,
   accumulatedText: string,
@@ -577,6 +579,29 @@ function resolveEffectiveGroup(group: RegisteredGroup): {
   return { effectiveGroup: group, isHome: false };
 }
 
+/** Recursively search for a file by name in subdirectories (max 3 levels). */
+function findFileInSubdirs(
+  dir: string,
+  fileName: string,
+  depth = 0,
+): string | null {
+  if (depth > 3) return null;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile() && entry.name === fileName) return fullPath;
+      if (entry.isDirectory()) {
+        const found = findFileInSubdirs(fullPath, fileName, depth + 1);
+        if (found) return found;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 /** Resolve the owner's home folder for memory mounting. Non-home groups read owner's home memory. */
 function resolveOwnerHomeFolder(group: RegisteredGroup): string {
   if (group.created_by) {
@@ -825,13 +850,16 @@ function sendImWithFailTracking(
   sendImWithRetry(imJid, text, localImagePaths).catch(() => {});
 }
 
-function isCursorAfter(candidate: MessageCursor, base: MessageCursor): boolean {
+export function isCursorAfter(
+  candidate: MessageCursor,
+  base: MessageCursor,
+): boolean {
   if (candidate.timestamp > base.timestamp) return true;
   if (candidate.timestamp < base.timestamp) return false;
   return candidate.id > base.id;
 }
 
-function normalizeCursor(value: unknown): MessageCursor {
+export function normalizeCursor(value: unknown): MessageCursor {
   if (typeof value === 'string') {
     return { timestamp: value, id: '' };
   }
@@ -2024,7 +2052,7 @@ function getAvailableGroups(): AvailableGroup[] {
     }));
 }
 
-function escapeXml(s: string): string {
+export function escapeXml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -2032,7 +2060,10 @@ function escapeXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function formatMessages(messages: NewMessage[], isShared = false): string {
+export function formatMessages(
+  messages: NewMessage[],
+  isShared = false,
+): string {
   const lines = messages.map((m) => {
     const content = isShared ? `[${m.sender_name}] ${m.content}` : m.content;
     const sourceJid = m.source_jid || m.chat_jid;
@@ -2047,7 +2078,7 @@ function formatMessages(messages: NewMessage[], isShared = false): string {
   return `<messages>\n${lines.join('\n')}\n</messages>`;
 }
 
-function collectMessageImages(
+export function collectMessageImages(
   chatJid: string,
   messages: NewMessage[],
 ): Array<{ data: string; mimeType: string }> {
@@ -3528,7 +3559,7 @@ async function sendMessage(
   }
 }
 
-function buildInterruptedReply(
+export function buildInterruptedReply(
   partialText: string,
   thinkingText?: string,
 ): string {
@@ -3547,7 +3578,7 @@ function buildInterruptedReply(
   return parts.join('\n\n');
 }
 
-function buildOverflowPartialReply(partialText: string): string {
+export function buildOverflowPartialReply(partialText: string): string {
   const trimmed = partialText.trimEnd();
   return trimmed
     ? `${trimmed}\n\n---\n*⚠️ 上下文压缩中，稍后自动继续*`
@@ -3611,11 +3642,11 @@ const STREAMING_BUFFER_DIR = path.join(DATA_DIR, 'streaming-buffer');
 const STREAMING_BUFFER_INTERVAL_MS = 5000;
 let streamingBufferInterval: ReturnType<typeof setInterval> | null = null;
 
-function encodeJidForFilename(jid: string): string {
+export function encodeJidForFilename(jid: string): string {
   return Buffer.from(jid).toString('base64url');
 }
 
-function decodeJidFromFilename(filename: string): string {
+export function decodeJidFromFilename(filename: string): string {
   const name = filename.endsWith('.txt') ? filename.slice(0, -4) : filename;
   return Buffer.from(name, 'base64url').toString();
 }
@@ -3753,7 +3784,7 @@ function stopStreamingBuffer(): void {
  * - Non-home groups can only send to groups sharing the same folder.
  * - Member home groups can send to groups created by the same user.
  */
-function canSendCrossGroupMessage(
+export function canSendCrossGroupMessage(
   isAdminHome: boolean,
   isHome: boolean,
   sourceFolder: string,
@@ -3873,7 +3904,7 @@ function startIpcWatcher(): void {
 
     // Pre-resolve owner's home folder once per group (avoid repeated DB queries in the message loop)
     const ownerHomeFolderForIm = sourceGroupEntry?.created_by
-      ? (getUserHomeGroup(sourceGroupEntry.created_by)?.folder || sourceGroup)
+      ? getUserHomeGroup(sourceGroupEntry.created_by)?.folder || sourceGroup
       : sourceGroup;
 
     for (const {
@@ -3996,22 +4027,39 @@ function startIpcWatcher(): void {
                   const caption = data.caption || undefined;
                   const fileName = data.fileName || undefined;
 
-                  // Conversation agents: skip IM forwarding (handled in wrappedOnOutput).
-                  // Non-agent: route to IM via activeImReplyRoutes.
+                  // For conversation agents, use activeImReplyRoutes (the IM
+                  // channel this conversation agent is bound to — e.g. DingTalk JID).
                   const imgImRoute = ipcAgentId
-                    ? null
+                    ? (activeImReplyRoutes.get(sourceGroup) ?? null)
                     : getChannelType(data.chatJid) !== null
                       ? data.chatJid
                       : (activeImReplyRoutes.get(sourceGroup) ?? null);
                   if (imgImRoute) {
-                    await retryImOperation('send_image', imgImRoute, () =>
-                      imManager.sendImage(
-                        imgImRoute,
-                        imageBuffer,
-                        mimeType,
-                        caption,
-                        fileName,
-                      ),
+                    const sent = await retryImOperation(
+                      'send_image',
+                      imgImRoute,
+                      () =>
+                        imManager.sendImage(
+                          imgImRoute,
+                          imageBuffer,
+                          mimeType,
+                          caption,
+                          fileName,
+                        ),
+                    );
+                    if (!sent) {
+                      const failMsg = `⚠️ 图片 "${fileName || caption || 'image'}" 发送失败（IM 通道发送失败），请稍后重试。`;
+                      broadcastToWebClients(sourceGroup, failMsg);
+                    }
+                  } else {
+                    logger.debug(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'No IM route for send_image, skipped IM delivery',
+                    );
+                    const skipImgMsg = `⚠️ 图片 "${fileName || 'image'}" 未发送到 IM 通道（当前会话无 IM 路由绑定）。`;
+                    broadcastToWebClients(
+                      data.chatJid ?? sourceGroup,
+                      skipImgMsg,
                     );
                   }
 
@@ -4742,6 +4790,10 @@ async function processTaskIpc(
       break;
 
     case 'send_file':
+      logger.info(
+        { data, sourceGroup, isAdminHome, isHome },
+        'processTaskIpc send_file reached',
+      );
       if (data.chatJid && data.filePath && data.fileName) {
         // Cross-group authorization check (same as send_message)
         const targetGroup = registeredGroups[data.chatJid];
@@ -4766,7 +4818,7 @@ async function processTaskIpc(
           const fullPath = path.join(GROUPS_DIR, sourceGroup, data.filePath);
 
           // Path traversal protection: ensure resolved path stays within workspace
-          const resolvedPath = path.resolve(fullPath);
+          let resolvedPath = path.resolve(fullPath);
           const safeRoot = path.resolve(GROUPS_DIR, sourceGroup) + path.sep;
           if (!resolvedPath.startsWith(safeRoot)) {
             logger.warn(
@@ -4776,22 +4828,73 @@ async function processTaskIpc(
             break;
           }
 
-          // Route to IM: skip for conversation agents (they handle their own IM).
+          if (!fs.existsSync(resolvedPath)) {
+            // Fallback: search in downloads subdirs (DingTalk/Telegram files land here)
+            const downloadsDir = path.join(
+              GROUPS_DIR,
+              sourceGroup,
+              'downloads',
+            );
+            const fileName = data.fileName || path.basename(data.filePath);
+            const foundPath = fs.existsSync(downloadsDir)
+              ? findFileInSubdirs(downloadsDir, fileName)
+              : null;
+            if (foundPath) {
+              logger.info(
+                { originalPath: resolvedPath, foundPath },
+                'send_file: fell back to downloads subdirectory',
+              );
+              resolvedPath = foundPath;
+            } else {
+              const warnMsg = `⚠️ 文件 "${data.fileName}" 未找到（路径 "${data.filePath}" 不存在）。请引导用户确认正确的文件路径，或使用 'send_file' 时提供正确的相对路径。`;
+              broadcastToWebClients(sourceGroup, warnMsg);
+              // Also notify via DingTalk for conversation agents bound to IM
+              const imRoute = activeImReplyRoutes.get(sourceGroup);
+              if (imRoute) {
+                try {
+                  await imManager.sendMessage(imRoute, warnMsg);
+                } catch {
+                  // ignore
+                }
+              }
+              logger.warn(
+                { filePath: data.filePath, resolvedPath },
+                'send_file: file not found',
+              );
+              break;
+            }
+          }
+
+          // Route to IM: for conversation agents, use activeImReplyRoutes (the IM
+          // channel this conversation agent is bound to — e.g. DingTalk group JID).
           const fileImRoute = ipcAgentId
-            ? null
+            ? (activeImReplyRoutes.get(sourceGroup) ?? null)
             : getChannelType(data.chatJid) !== null
               ? data.chatJid
               : (activeImReplyRoutes.get(sourceGroup) ?? null);
           if (fileImRoute) {
             const imFileName = data.fileName || path.basename(resolvedPath);
-            await retryImOperation('send_file', fileImRoute, () =>
+            const sent = await retryImOperation('send_file', fileImRoute, () =>
               imManager.sendFile(fileImRoute, resolvedPath, imFileName),
             );
+            if (!sent) {
+              const failMsg = `⚠️ 文件 "${data.fileName}" 发送失败，请稍后重试。`;
+              broadcastToWebClients(sourceGroup, failMsg);
+              // Also notify via DingTalk directly so the user sees it there
+              try {
+                await imManager.sendMessage(fileImRoute, failMsg);
+              } catch {
+                // ignore — failure notification itself failing should not crash
+              }
+            }
           } else {
             logger.debug(
               { chatJid: data.chatJid, sourceGroup },
               'No IM route for send_file, skipped IM delivery',
             );
+            // Notify the user that file delivery to IM was skipped
+            const skipMsg = `⚠️ 文件 "${data.fileName}" 未发送到 IM 通道（当前会话无 IM 路由绑定，文件仅保存在工作区）。`;
+            broadcastToWebClients(data.chatJid ?? sourceGroup, skipMsg);
           }
           logger.info(
             {
@@ -4920,6 +5023,8 @@ async function processAgentConversation(
   // Persist the IM routing target so it survives service restarts.
   if (replySourceImJid) {
     updateAgentLastImJid(agentId, replySourceImJid);
+    // Also publish to activeImReplyRoutes so send_file/send_image IPC can route to IM.
+    activeImReplyRoutes.set(effectiveGroup.folder, replySourceImJid);
   }
 
   // ── Feishu Streaming Card (conversation agent) ──
@@ -5538,6 +5643,33 @@ async function processAgentConversation(
           },
           agentId,
         );
+        // Fallback: send accumulated streaming text to IM when output.result is null
+        // (agent-runner streams all text via text_delta, never sets result field)
+        logger.info({
+          chatJid,
+          agentId,
+          replySourceImJid,
+          accLen: agentStreamingAccText.length,
+          cursorCommitted,
+        });
+        if (replySourceImJid) {
+          const localImagePaths = extractLocalImImagePaths(
+            partialReply,
+            effectiveGroup.folder,
+          );
+          logger.info({ replySourceImJid, textLen: partialReply.length });
+          const imSent = await sendImWithRetry(
+            replySourceImJid,
+            partialReply,
+            localImagePaths,
+          );
+          logger.info({ replySourceImJid, imSent });
+        } else {
+          logger.warn(
+            { chatJid, agentId },
+            'Partial reply: no replySourceImJid found, skipping IM send',
+          );
+        }
         commitCursor();
       } catch (err) {
         logger.warn(
@@ -6226,7 +6358,10 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
   return (baseChatJid: string, agentId: string) => {
     const group =
       registeredGroups[baseChatJid] ?? getRegisteredGroup(baseChatJid);
-    if (!group) return;
+    if (!group) {
+      logger.warn({ baseChatJid, agentId });
+      return;
+    }
 
     // Use the agent's actual chat_jid (the workspace's registered JID) as the
     // base.  Previously we used web:${folder} which doesn't match any registered
@@ -6250,13 +6385,38 @@ function buildOnAgentMessage(): (baseChatJid: string, agentId: string) => void {
       // Force close running process then enqueue fresh start.
       // Use a stable taskId so rapid-fire IM messages deduplicate into a
       // single queued restart instead of N separate restarts.
+      logger.info({ virtualChatJid, taskId: `agent-im-restart:${agentId}` });
       queue.closeStdin(virtualChatJid);
       const taskId = `agent-im-restart:${agentId}`;
+      logger.debug(
+        { virtualChatJid, taskId },
+        'Agent IM restart: closing stdin and enqueuing task',
+      );
       queue.enqueueTask(virtualChatJid, taskId, async () => {
-        await processAgentConversation(homeChatJid, agentId);
+        logger.debug(
+          { homeChatJid, agentId },
+          'Agent IM restart: starting processAgentConversation',
+        );
+        logger.info({ homeChatJid, agentId, taskId });
+        try {
+          await processAgentConversation(homeChatJid, agentId);
+        } catch (err) {
+          logger.error(
+            { err, homeChatJid, agentId },
+            'Agent IM restart: processAgentConversation failed',
+          );
+        }
       });
     } else {
       // Web-origin: try to pipe into running agent process
+      logger.debug(
+        {
+          virtualChatJid,
+          missedMessages: missedMessages.length,
+          isImSource,
+        },
+        'Web-origin missed messages: attempting to pipe into running agent',
+      );
       const formatted =
         missedMessages.length > 0 ? formatMessages(missedMessages, false) : '';
       const images = collectMessageImages(virtualChatJid, missedMessages);
@@ -6344,12 +6504,14 @@ async function connectUserIMChannels(
   telegramConfig?: TelegramConnectConfig | null,
   qqConfig?: QQConnectConfig | null,
   wechatConfig?: WeChatConnectConfig | null,
+  dingtalkConfig?: DingTalkConnectConfig | null,
   ignoreMessagesBefore?: number,
 ): Promise<{
   feishu: boolean;
   telegram: boolean;
   qq: boolean;
   wechat: boolean;
+  dingtalk: boolean;
 }> {
   const onNewChat = buildOnNewChat(userId, homeFolder);
   const resolveGroupFolder = (chatJid: string): string | undefined => {
@@ -6364,6 +6526,7 @@ async function connectUserIMChannels(
   let telegram = false;
   let qq = false;
   let wechat = false;
+  let dingtalk = false;
 
   if (
     feishuConfig &&
@@ -6453,7 +6616,30 @@ async function connectUserIMChannels(
     );
   }
 
-  return { feishu, telegram, qq, wechat };
+  if (
+    dingtalkConfig &&
+    dingtalkConfig.enabled !== false &&
+    dingtalkConfig.clientId &&
+    dingtalkConfig.clientSecret
+  ) {
+    dingtalk = await imManager.connectUserDingTalk(
+      userId,
+      dingtalkConfig,
+      onNewChat,
+      {
+        ignoreMessagesBefore,
+        onCommand: handleCommand,
+        resolveGroupFolder,
+        resolveEffectiveChatJid,
+        onAgentMessage,
+        onBotAddedToGroup,
+        onBotRemovedFromGroup,
+        shouldProcessGroupMessage,
+      },
+    );
+  }
+
+  return { feishu, telegram, qq, wechat, dingtalk };
 }
 
 function movePathWithFallback(src: string, dst: string): void {
@@ -6849,7 +7035,7 @@ async function main(): Promise<void> {
   // Reload a per-user IM channel (hot-reload on user-im config save)
   const reloadUserIMConfig = async (
     userId: string,
-    channel: 'feishu' | 'telegram' | 'qq' | 'wechat',
+    channel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk',
   ): Promise<boolean> => {
     const homeGroup = getUserHomeGroup(userId);
     if (!homeGroup) {
@@ -6954,6 +7140,39 @@ async function main(): Promise<void> {
       }
       logger.info({ userId }, 'User QQ channel disabled via hot-reload');
       return false;
+    } else if (channel === 'dingtalk') {
+      await imManager.disconnectUserDingTalk(userId);
+      const config = getUserDingTalkConfig(userId);
+      if (
+        config &&
+        config.enabled !== false &&
+        config.clientId &&
+        config.clientSecret
+      ) {
+        const connected = await imManager.connectUserDingTalk(
+          userId,
+          config,
+          onNewChat,
+          {
+            ignoreMessagesBefore,
+            onCommand: handleCommand,
+            resolveGroupFolder: (chatJid: string) =>
+              resolveEffectiveFolder(chatJid),
+            resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+            onAgentMessage: buildOnAgentMessage(),
+            onBotAddedToGroup: buildOnNewChat(userId, homeFolder),
+            onBotRemovedFromGroup: buildOnBotRemovedFromGroup(),
+            shouldProcessGroupMessage,
+          },
+        );
+        logger.info(
+          { userId, connected },
+          'User DingTalk connection hot-reloaded',
+        );
+        return connected;
+      }
+      logger.info({ userId }, 'User DingTalk channel disabled via hot-reload');
+      return false;
     } else {
       // WeChat
       await imManager.disconnectUserWeChat(userId);
@@ -7022,6 +7241,8 @@ async function main(): Promise<void> {
     isUserQQConnected: (userId: string) => imManager.isQQConnected(userId),
     isUserWeChatConnected: (userId: string) =>
       imManager.isWeChatConnected(userId),
+    isUserDingTalkConnected: (userId: string) =>
+      imManager.isDingTalkConnected(userId),
     processAgentConversation,
     getFeishuChatInfo: (userId: string, chatId: string) =>
       imManager.getFeishuChatInfo(userId, chatId),
@@ -7321,9 +7542,18 @@ async function main(): Promise<void> {
       const msgId = crypto.randomUUID();
       const now = new Date().toISOString();
       ensureChatExists(chatJid);
-      storeMessageDirect(msgId, chatJid, senderId, senderName, text, now, false, {
-        meta: { sourceKind: 'scheduled_task_prompt' },
-      });
+      storeMessageDirect(
+        msgId,
+        chatJid,
+        senderId,
+        senderName,
+        text,
+        now,
+        false,
+        {
+          meta: { sourceKind: 'scheduled_task_prompt' },
+        },
+      );
       broadcastNewMessage(chatJid, {
         id: msgId,
         chat_jid: chatJid,
@@ -7393,6 +7623,7 @@ async function main(): Promise<void> {
     const userTelegram = getUserTelegramConfig(user.id);
     const userQQ = getUserQQConfig(user.id);
     const userWeChat = getUserWeChatConfig(user.id);
+    const userDingTalk = getUserDingTalkConfig(user.id);
 
     // Determine effective Feishu config: per-user > global (admin only)
     let effectiveFeishu: FeishuConnectConfig | null = null;
@@ -7454,11 +7685,22 @@ async function main(): Promise<void> {
       };
     }
 
+    // Determine effective DingTalk config: per-user only (no global fallback)
+    let effectiveDingTalk: DingTalkConnectConfig | null = null;
+    if (userDingTalk && userDingTalk.clientId && userDingTalk.clientSecret) {
+      effectiveDingTalk = {
+        clientId: userDingTalk.clientId,
+        clientSecret: userDingTalk.clientSecret,
+        enabled: userDingTalk.enabled,
+      };
+    }
+
     if (
       !effectiveFeishu &&
       !effectiveTelegram &&
       !effectiveQQ &&
-      !effectiveWeChat
+      !effectiveWeChat &&
+      !effectiveDingTalk
     )
       continue;
 
@@ -7470,6 +7712,7 @@ async function main(): Promise<void> {
         effectiveTelegram,
         effectiveQQ,
         effectiveWeChat,
+        effectiveDingTalk,
         Date.now(),
       );
       if (result.feishu) anyFeishuConnected = true;
@@ -7480,6 +7723,7 @@ async function main(): Promise<void> {
           telegram: result.telegram,
           qq: result.qq,
           wechat: result.wechat,
+          dingtalk: result.dingtalk,
         },
         'User IM channels connected',
       );

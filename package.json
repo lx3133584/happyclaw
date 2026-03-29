@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
+    "test": "vitest",
     "dev:all": "npx concurrently --timestamp-format \"yyyy-MM-dd HH:mm:ss.SSS\" -n backend,frontend -c blue,green \"npm run dev\" \"npm run dev:web\"",
     "dev:web": "cd web && npm run dev",
     "build:web": "cd web && npm run build",
@@ -26,6 +27,7 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^11.8.1",
     "cron-parser": "^5.5.0",
+    "dingtalk-stream": "2.1.6-beta.1",
     "grammy": "^1.40.0",
     "hono": "^4.11.9",
     "node-pty": "^1.1.0",
@@ -44,7 +46,8 @@
     "concurrently": "^9.2.1",
     "prettier": "^3.8.1",
     "tsx": "^4.19.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.1"
   },
   "engines": {
     "node": ">=20"

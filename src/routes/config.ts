@@ -23,6 +23,7 @@ import {
   TelegramConfigSchema,
   QQConfigSchema,
   WeChatConfigSchema,
+  DingTalkConfigSchema,
   RegistrationConfigSchema,
   AppearanceConfigSchema,
   SystemSettingsSchema,
@@ -68,6 +69,8 @@ import {
   saveUserQQConfig,
   getUserWeChatConfig,
   saveUserWeChatConfig,
+  getUserDingTalkConfig,
+  saveUserDingTalkConfig,
   updateAllSessionCredentials,
 } from '../runtime-config.js';
 import type { ClaudeOAuthCredentials } from '../runtime-config.js';
@@ -89,7 +92,7 @@ const configRoutes = new Hono<{ Variables: Variables }>();
  */
 function countOtherEnabledImChannels(
   userId: string,
-  excludeChannel: 'feishu' | 'telegram' | 'qq' | 'wechat',
+  excludeChannel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk',
 ): number {
   let count = 0;
   if (excludeChannel !== 'feishu' && getUserFeishuConfig(userId)?.enabled)
@@ -99,6 +102,8 @@ function countOtherEnabledImChannels(
   if (excludeChannel !== 'wechat' && getUserWeChatConfig(userId)?.enabled)
     count++;
   if (excludeChannel !== 'qq' && getUserQQConfig(userId)?.enabled) count++;
+  if (excludeChannel !== 'dingtalk' && getUserDingTalkConfig(userId)?.enabled)
+    count++;
   return count;
 }
 
@@ -169,8 +174,7 @@ async function applyClaudeConfigToAllGroups(
 // --- OAuth 常量 ---
 
 const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const OAUTH_REDIRECT_URI =
-  'https://console.anthropic.com/oauth/code/callback';
+const OAUTH_REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback';
 const OAUTH_SCOPES = 'org:create_api_key user:profile user:inference';
 const OAUTH_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
 const OAUTH_TOKEN_URL = 'https://api.anthropic.com/v1/oauth/token';
@@ -202,7 +206,6 @@ configRoutes.get('/claude', authMiddleware, systemConfigMiddleware, (c) => {
     return c.json({ error: 'Failed to load Claude config' }, 500);
   }
 });
-
 
 // ─── GET /claude/providers — 列出所有供应商 + 健康 + 负载均衡配置 ─────
 configRoutes.get(
@@ -532,7 +535,7 @@ configRoutes.post(
     const body = await c.req.json().catch(() => ({}));
     const targetProviderId =
       typeof (body as Record<string, unknown>).targetProviderId === 'string'
-        ? (body as Record<string, unknown>).targetProviderId as string
+        ? ((body as Record<string, unknown>).targetProviderId as string)
         : undefined;
 
     const state = randomBytes(32).toString('hex');
@@ -1120,6 +1123,7 @@ configRoutes.get('/user-im/status', authMiddleware, (c) => {
     telegram: deps?.isUserTelegramConnected?.(user.id) ?? false,
     qq: deps?.isUserQQConnected?.(user.id) ?? false,
     wechat: deps?.isUserWeChatConnected?.(user.id) ?? false,
+    dingtalk: deps?.isUserDingTalkConnected?.(user.id) ?? false,
   });
 });
 
@@ -1710,6 +1714,150 @@ configRoutes.delete('/user-im/qq/paired-chats/:jid', authMiddleware, (c) => {
   return c.json({ success: true });
 });
 
+// ─── Per-user DingTalk IM config ──────────────────────────────────
+
+configRoutes.get('/user-im/dingtalk', authMiddleware, (c) => {
+  const user = c.get('user') as AuthUser;
+  try {
+    const config = getUserDingTalkConfig(user.id);
+    const connected = deps?.isUserDingTalkConnected?.(user.id) ?? false;
+    if (!config) {
+      return c.json({
+        clientId: '',
+        hasClientSecret: false,
+        clientSecretMasked: null,
+        enabled: false,
+        updatedAt: null,
+        connected,
+      });
+    }
+    return c.json({
+      clientId: config.clientId,
+      hasClientSecret: !!config.clientSecret,
+      clientSecretMasked: config.clientSecret
+        ? config.clientSecret.slice(0, 4) +
+          '***' +
+          config.clientSecret.slice(-4)
+        : null,
+      enabled: config.enabled ?? false,
+      updatedAt: config.updatedAt,
+      connected,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to load user DingTalk config');
+    return c.json({ error: 'Failed to load DingTalk config' }, 500);
+  }
+});
+
+configRoutes.put('/user-im/dingtalk', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const body = await c.req.json().catch(() => ({}));
+  const validation = DingTalkConfigSchema.safeParse(body);
+  if (!validation.success) {
+    return c.json(
+      { error: 'Invalid request body', details: validation.error.format() },
+      400,
+    );
+  }
+
+  // Billing: check IM channel limit when enabling
+  if (validation.data.enabled === true && isBillingEnabled()) {
+    const current = getUserDingTalkConfig(user.id);
+    if (!current?.enabled) {
+      const limit = checkImChannelLimit(
+        user.id,
+        user.role,
+        countOtherEnabledImChannels(user.id, 'dingtalk'),
+      );
+      if (!limit.allowed) {
+        return c.json({ error: limit.reason }, 403);
+      }
+    }
+  }
+
+  const current = getUserDingTalkConfig(user.id);
+  const next = {
+    clientId: current?.clientId || '',
+    clientSecret: current?.clientSecret || '',
+    enabled: current?.enabled ?? true,
+  };
+
+  if (typeof validation.data.clientId === 'string') {
+    next.clientId = validation.data.clientId.trim();
+  }
+  if (typeof validation.data.clientSecret === 'string') {
+    const secret = validation.data.clientSecret.trim();
+    if (secret) next.clientSecret = secret;
+  } else if (validation.data.clearClientSecret === true) {
+    next.clientSecret = '';
+  }
+  if (typeof validation.data.enabled === 'boolean') {
+    next.enabled = validation.data.enabled;
+  } else if (!current && (next.clientId || next.clientSecret)) {
+    next.enabled = true;
+  }
+
+  try {
+    const saved = saveUserDingTalkConfig(user.id, next);
+
+    // Hot-reload: reconnect user's DingTalk channel
+    if (deps?.reloadUserIMConfig) {
+      try {
+        await deps.reloadUserIMConfig(user.id, 'dingtalk');
+      } catch (err) {
+        logger.warn({ err, userId: user.id }, 'Failed to hot-reload DingTalk');
+      }
+    }
+
+    const connected = deps?.isUserDingTalkConnected?.(user.id) ?? false;
+    return c.json({
+      clientId: saved.clientId,
+      hasClientSecret: !!saved.clientSecret,
+      clientSecretMasked: saved.clientSecret
+        ? saved.clientSecret.slice(0, 4) + '***' + saved.clientSecret.slice(-4)
+        : null,
+      enabled: saved.enabled ?? false,
+      updatedAt: saved.updatedAt,
+      connected,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Invalid config';
+    logger.warn({ err }, 'Invalid DingTalk config');
+    return c.json({ error: message }, 400);
+  }
+});
+
+configRoutes.post('/user-im/dingtalk/test', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const config = getUserDingTalkConfig(user.id);
+
+  if (!config?.clientId || !config?.clientSecret) {
+    return c.json({ error: 'DingTalk credentials not configured' }, 400);
+  }
+
+  try {
+    // Test by initializing a client and getting access token
+    const { DWClient } = await import('dingtalk-stream');
+    const testClient = new DWClient({
+      clientId: config.clientId,
+      clientSecret: config.clientSecret,
+    });
+
+    // Try to get access token
+    const token = await testClient.getAccessToken();
+    if (!token) {
+      return c.json({ error: 'Failed to obtain access token' }, 400);
+    }
+
+    return c.json({ success: true });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Connection test failed';
+    logger.warn({ err }, 'DingTalk connection test failed');
+    return c.json({ error: message }, 400);
+  }
+});
+
 // ─── Per-user WeChat IM config ──────────────────────────────────
 
 const WECHAT_API_BASE = 'https://ilinkai.weixin.qq.com';
@@ -1848,14 +1996,8 @@ configRoutes.post('/user-im/wechat/qrcode', authMiddleware, async (c) => {
     const res = await fetch(url);
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      logger.error(
-        { status: res.status, body },
-        'WeChat QR code fetch failed',
-      );
-      return c.json(
-        { error: `Failed to fetch QR code: ${res.status}` },
-        502,
-      );
+      logger.error({ status: res.status, body }, 'WeChat QR code fetch failed');
+      return c.json({ error: `Failed to fetch QR code: ${res.status}` }, 502);
     }
     const data = (await res.json()) as {
       qrcode?: string;
@@ -1893,97 +2035,90 @@ configRoutes.post('/user-im/wechat/qrcode', authMiddleware, async (c) => {
 });
 
 // Poll QR code scan status
-configRoutes.get(
-  '/user-im/wechat/qrcode-status',
-  authMiddleware,
-  async (c) => {
-    const user = c.get('user') as AuthUser;
-    const qrcode = c.req.query('qrcode');
-    if (!qrcode) {
-      return c.json({ error: 'qrcode query parameter required' }, 400);
+configRoutes.get('/user-im/wechat/qrcode-status', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const qrcode = c.req.query('qrcode');
+  if (!qrcode) {
+    return c.json({ error: 'qrcode query parameter required' }, 400);
+  }
+
+  try {
+    const url = `${WECHAT_API_BASE}/ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`;
+    const headers: Record<string, string> = {
+      'iLink-App-ClientVersion': '1',
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 35000);
+    let res: Response;
+    try {
+      res = await fetch(url, { headers, signal: controller.signal });
+      clearTimeout(timer);
+    } catch (err) {
+      clearTimeout(timer);
+      if (err instanceof Error && err.name === 'AbortError') {
+        return c.json({ status: 'wait' });
+      }
+      throw err;
     }
 
-    try {
-      const url = `${WECHAT_API_BASE}/ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`;
-      const headers: Record<string, string> = {
-        'iLink-App-ClientVersion': '1',
-      };
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 35000);
-      let res: Response;
-      try {
-        res = await fetch(url, { headers, signal: controller.signal });
-        clearTimeout(timer);
-      } catch (err) {
-        clearTimeout(timer);
-        if (
-          err instanceof Error &&
-          err.name === 'AbortError'
-        ) {
-          return c.json({ status: 'wait' });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return c.json(
+        { error: `QR status poll failed: ${res.status}`, body },
+        502,
+      );
+    }
+
+    const data = (await res.json()) as {
+      status?: 'wait' | 'scaned' | 'confirmed' | 'expired';
+      bot_token?: string;
+      ilink_bot_id?: string;
+      baseurl?: string;
+      ilink_user_id?: string;
+    };
+
+    if (data.status === 'confirmed' && data.bot_token && data.ilink_bot_id) {
+      // Auto-save credentials and connect
+      const saved = saveUserWeChatConfig(user.id, {
+        botToken: data.bot_token,
+        ilinkBotId: data.ilink_bot_id.replace(/[^a-zA-Z0-9@._-]/g, ''),
+        baseUrl: data.baseurl || undefined,
+        enabled: true,
+      });
+
+      // Note: ilink_user_id (the QR scanner) is NOT auto-paired here.
+      // The scanner needs to send a message to the bot and use /pair <code>
+      // to complete pairing, same as QQ/Telegram flow.
+      // This ensures proper group registration via buildOnNewChat/registerGroup.
+
+      // Hot-reload: connect WeChat
+      if (deps?.reloadUserIMConfig) {
+        try {
+          await deps.reloadUserIMConfig(user.id, 'wechat');
+        } catch (err) {
+          logger.warn(
+            { err, userId: user.id },
+            'Failed to hot-reload WeChat after QR login',
+          );
         }
-        throw err;
-      }
-
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        return c.json(
-          { error: `QR status poll failed: ${res.status}`, body },
-          502,
-        );
-      }
-
-      const data = (await res.json()) as {
-        status?: 'wait' | 'scaned' | 'confirmed' | 'expired';
-        bot_token?: string;
-        ilink_bot_id?: string;
-        baseurl?: string;
-        ilink_user_id?: string;
-      };
-
-      if (data.status === 'confirmed' && data.bot_token && data.ilink_bot_id) {
-        // Auto-save credentials and connect
-        const saved = saveUserWeChatConfig(user.id, {
-          botToken: data.bot_token,
-          ilinkBotId: data.ilink_bot_id.replace(/[^a-zA-Z0-9@._-]/g, ''),
-          baseUrl: data.baseurl || undefined,
-          enabled: true,
-        });
-
-        // Note: ilink_user_id (the QR scanner) is NOT auto-paired here.
-        // The scanner needs to send a message to the bot and use /pair <code>
-        // to complete pairing, same as QQ/Telegram flow.
-        // This ensures proper group registration via buildOnNewChat/registerGroup.
-
-        // Hot-reload: connect WeChat
-        if (deps?.reloadUserIMConfig) {
-          try {
-            await deps.reloadUserIMConfig(user.id, 'wechat');
-          } catch (err) {
-            logger.warn(
-              { err, userId: user.id },
-              'Failed to hot-reload WeChat after QR login',
-            );
-          }
-        }
-
-        return c.json({
-          status: 'confirmed',
-          ilinkBotId: saved.ilinkBotId,
-        });
       }
 
       return c.json({
-        status: data.status || 'wait',
+        status: 'confirmed',
+        ilinkBotId: saved.ilinkBotId,
       });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'QR status poll failed';
-      logger.error({ err }, 'WeChat QR status poll failed');
-      return c.json({ error: message }, 500);
     }
-  },
-);
+
+    return c.json({
+      status: data.status || 'wait',
+    });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'QR status poll failed';
+    logger.error({ err }, 'WeChat QR status poll failed');
+    return c.json({ error: message }, 500);
+  }
+});
 
 // Disconnect WeChat and clear token
 configRoutes.post('/user-im/wechat/disconnect', authMiddleware, async (c) => {
@@ -2004,10 +2139,7 @@ configRoutes.post('/user-im/wechat/disconnect', authMiddleware, async (c) => {
       try {
         await deps.reloadUserIMConfig(user.id, 'wechat');
       } catch (err) {
-        logger.warn(
-          { err, userId: user.id },
-          'Failed to disconnect WeChat',
-        );
+        logger.warn({ err, userId: user.id }, 'Failed to disconnect WeChat');
       }
     }
 
@@ -2149,6 +2281,5 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
     400,
   );
 });
-
 
 export default configRoutes;

@@ -14,11 +14,13 @@ import {
   createTelegramChannel,
   createQQChannel,
   createWeChatChannel,
+  createDingTalkChannel,
 } from './im-channel.js';
 import type { FeishuConnectionConfig } from './feishu.js';
 import type { TelegramConnectionConfig } from './telegram.js';
 import type { QQConnectionConfig } from './qq.js';
 import type { WeChatConnectionConfig } from './wechat.js';
+import type { DingTalkConnectionConfig } from './dingtalk.js';
 import type { StreamingCardController } from './feishu-streaming-card.js';
 import { getRegisteredGroup, getJidsByFolder } from './db.js';
 import { logger } from './logger.js';
@@ -52,6 +54,12 @@ export interface WeChatConnectConfig {
   baseUrl?: string;
   cdnBaseUrl?: string;
   getUpdatesBuf?: string;
+  enabled?: boolean;
+}
+
+export interface DingTalkConnectConfig {
+  clientId: string;
+  clientSecret: string;
   enabled?: boolean;
 }
 
@@ -235,7 +243,10 @@ class IMConnectionManager {
    * Create a streaming card session for an IM chat (Feishu only).
    * Returns undefined for non-Feishu channels or if not supported.
    */
-  createStreamingSession(jid: string, onCardCreated?: (messageId: string) => void): StreamingCardController | undefined {
+  createStreamingSession(
+    jid: string,
+    onCardCreated?: (messageId: string) => void,
+  ): StreamingCardController | undefined {
     const channelType = getChannelType(jid);
     if (channelType !== 'feishu') return undefined;
 
@@ -306,6 +317,7 @@ class IMConnectionManager {
    */
   isChannelAvailableForJid(jid: string): boolean {
     const channelType = getChannelType(jid);
+    logger.debug({ jid, channelType }, 'isChannelAvailableForJid check');
     if (!channelType) return false;
     return !!this.findChannelForJid(jid, channelType);
   }
@@ -506,6 +518,56 @@ class IMConnectionManager {
   }
 
   /**
+   * Connect a DingTalk Stream instance for a specific user.
+   */
+  async connectUserDingTalk(
+    userId: string,
+    config: DingTalkConnectConfig,
+    onNewChat: (chatJid: string, chatName: string) => void,
+    options?: {
+      ignoreMessagesBefore?: number;
+      onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+      resolveGroupFolder?: (jid: string) => string | undefined;
+      resolveEffectiveChatJid?: (
+        chatJid: string,
+      ) => { effectiveJid: string; agentId: string | null } | null;
+      onAgentMessage?: (baseChatJid: string, agentId: string) => void;
+      onBotAddedToGroup?: (chatJid: string, chatName: string) => void;
+      onBotRemovedFromGroup?: (chatJid: string) => void;
+      shouldProcessGroupMessage?: (chatJid: string) => boolean;
+    },
+  ): Promise<boolean> {
+    if (!config.clientId || !config.clientSecret) {
+      logger.info({ userId }, 'DingTalk config empty, skipping connection');
+      return false;
+    }
+
+    const channel = createDingTalkChannel({
+      clientId: config.clientId,
+      clientSecret: config.clientSecret,
+    });
+
+    return this.connectChannel(userId, 'dingtalk', channel, {
+      onReady: () => {
+        logger.info({ userId }, 'User DingTalk bot connected');
+      },
+      onNewChat,
+      ignoreMessagesBefore: options?.ignoreMessagesBefore,
+      onCommand: options?.onCommand,
+      resolveGroupFolder: options?.resolveGroupFolder,
+      resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
+      onAgentMessage: options?.onAgentMessage,
+      onBotAddedToGroup: options?.onBotAddedToGroup,
+      onBotRemovedFromGroup: options?.onBotRemovedFromGroup,
+      shouldProcessGroupMessage: options?.shouldProcessGroupMessage,
+    });
+  }
+
+  async disconnectUserDingTalk(userId: string): Promise<void> {
+    await this.disconnectChannel(userId, 'dingtalk');
+  }
+
+  /**
    * Send a message to a Feishu chat.
    * @deprecated Use sendMessage(jid, text) which auto-routes.
    */
@@ -631,6 +693,19 @@ class IMConnectionManager {
     return false;
   }
 
+  isDingTalkConnected(userId: string): boolean {
+    const conn = this.connections.get(userId);
+    return conn?.channels.get('dingtalk')?.isConnected() ?? false;
+  }
+
+  /** Check if any user has an active DingTalk connection */
+  isAnyDingTalkConnected(): boolean {
+    for (const conn of this.connections.values()) {
+      if (conn.channels.get('dingtalk')?.isConnected()) return true;
+    }
+    return false;
+  }
+
   /** Get the Feishu channel for a user (for direct access like syncGroups) */
   getFeishuConnection(userId: string): IMChannel | undefined {
     return this.connections.get(userId)?.channels.get('feishu');
@@ -671,13 +746,17 @@ class IMConnectionManager {
    * - null: channel supports getChatInfo but chat is not reachable
    * - undefined: channel does not support getChatInfo (e.g. Telegram, QQ)
    */
-  async getChatInfo(jid: string): Promise<{
-    avatar?: string;
-    name?: string;
-    user_count?: string;
-    chat_type?: string;
-    chat_mode?: string;
-  } | null | undefined> {
+  async getChatInfo(jid: string): Promise<
+    | {
+        avatar?: string;
+        name?: string;
+        user_count?: string;
+        chat_type?: string;
+        chat_mode?: string;
+      }
+    | null
+    | undefined
+  > {
     const channelType = getChannelType(jid);
     if (!channelType) return null;
 

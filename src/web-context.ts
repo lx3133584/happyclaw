@@ -3,7 +3,12 @@
 import { WebSocket } from 'ws';
 import { RegisteredGroup, UserRole } from './types.js';
 import { GroupQueue } from './group-queue.js';
-import type { AuthUser, NewMessage, MessageCursor, UserSessionWithUser } from './types.js';
+import type {
+  AuthUser,
+  NewMessage,
+  MessageCursor,
+  UserSessionWithUser,
+} from './types.js';
 import {
   getJidsByFolder,
   getRegisteredGroup,
@@ -38,7 +43,7 @@ export interface WebDeps {
   }) => Promise<boolean>;
   reloadUserIMConfig?: (
     userId: string,
-    channel: 'feishu' | 'telegram' | 'qq' | 'wechat',
+    channel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk',
   ) => Promise<boolean>;
   isFeishuConnected?: () => boolean;
   isTelegramConnected?: () => boolean;
@@ -46,6 +51,7 @@ export interface WebDeps {
   isUserTelegramConnected?: (userId: string) => boolean;
   isUserQQConnected?: (userId: string) => boolean;
   isUserWeChatConnected?: (userId: string) => boolean;
+  isUserDingTalkConnected?: (userId: string) => boolean;
   processAgentConversation?: (
     chatJid: string,
     agentId: string,
@@ -103,7 +109,10 @@ lastActiveCleanupTimer.unref?.();
 
 // Session data cache — 30s TTL, avoids DB query on every request
 const SESSION_CACHE_TTL_MS = 30 * 1000;
-const sessionCache = new Map<string, { data: UserSessionWithUser; expiry: number }>();
+const sessionCache = new Map<
+  string,
+  { data: UserSessionWithUser; expiry: number }
+>();
 
 export function getCachedSessionWithUser(
   sessionId: string,

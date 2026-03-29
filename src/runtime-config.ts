@@ -1021,9 +1021,10 @@ function fromStoredProviderV4(stored: StoredProviderV4): UnifiedProvider {
 }
 
 /** Migrate V3 stored state to V4 unified provider list */
-function migrateV3toV4(
-  v3: ClaudeStoredStateV3Resolved,
-): { providers: UnifiedProvider[]; balancing: BalancingConfig } {
+function migrateV3toV4(v3: ClaudeStoredStateV3Resolved): {
+  providers: UnifiedProvider[];
+  balancing: BalancingConfig;
+} {
   const providers: UnifiedProvider[] = [];
   const now = new Date().toISOString();
 
@@ -1044,8 +1045,7 @@ function migrateV3toV4(
       anthropicModel: '',
       anthropicApiKey: v3.officialSecrets.anthropicApiKey,
       claudeCodeOauthToken: v3.officialSecrets.claudeCodeOauthToken,
-      claudeOAuthCredentials:
-        v3.officialSecrets.claudeOAuthCredentials ?? null,
+      claudeOAuthCredentials: v3.officialSecrets.claudeOAuthCredentials ?? null,
       customEnv: v3.officialCustomEnv || {},
       updatedAt: v3.officialUpdatedAt || now,
     });
@@ -1245,7 +1245,7 @@ export function createProvider(input: {
     id: crypto.randomBytes(8).toString('hex'),
     name: normalizeProfileName(input.name),
     type: input.type,
-    enabled: input.enabled ?? (state.providers.length === 0),
+    enabled: input.enabled ?? state.providers.length === 0,
     weight: Math.max(1, Math.min(100, input.weight ?? 1)),
     anthropicBaseUrl: input.anthropicBaseUrl
       ? normalizeBaseUrl(input.anthropicBaseUrl)
@@ -1393,10 +1393,7 @@ export function toggleProvider(id: string): UnifiedProvider {
   const newEnabled = !provider.enabled;
 
   // Prevent disabling the last enabled provider
-  if (
-    !newEnabled &&
-    state.providers.filter((p) => p.enabled).length <= 1
-  ) {
+  if (!newEnabled && state.providers.filter((p) => p.enabled).length <= 1) {
     throw new Error('至少需要保留一个启用的供应商');
   }
 
@@ -1432,7 +1429,9 @@ export function deleteProvider(id: string): void {
 }
 
 /** Convert a UnifiedProvider to the flat ClaudeProviderConfig used by container runner */
-export function providerToConfig(provider: UnifiedProvider): ClaudeProviderConfig {
+export function providerToConfig(
+  provider: UnifiedProvider,
+): ClaudeProviderConfig {
   return {
     anthropicBaseUrl: provider.anthropicBaseUrl,
     anthropicAuthToken: provider.anthropicAuthToken,
@@ -1445,7 +1444,9 @@ export function providerToConfig(provider: UnifiedProvider): ClaudeProviderConfi
 }
 
 /** Convert UnifiedProvider to public (masked) representation */
-export function toPublicProvider(provider: UnifiedProvider): UnifiedProviderPublic {
+export function toPublicProvider(
+  provider: UnifiedProvider,
+): UnifiedProviderPublic {
   return {
     id: provider.id,
     name: provider.name,
@@ -1491,7 +1492,10 @@ export function resolveProviderById(providerId: string): {
     const fallback =
       state.providers.find((p) => p.enabled) || state.providers[0];
     if (!fallback) return { config: defaultsFromEnv(), customEnv: {} };
-    return { config: providerToConfig(fallback), customEnv: fallback.customEnv };
+    return {
+      config: providerToConfig(fallback),
+      customEnv: fallback.customEnv,
+    };
   }
 
   return {
@@ -2366,8 +2370,7 @@ export function getActiveProfileCustomEnv(): Record<string, string> {
   const state = readStoredStateV4();
   if (!state) return {};
 
-  const enabled =
-    state.providers.find((p) => p.enabled) || state.providers[0];
+  const enabled = state.providers.find((p) => p.enabled) || state.providers[0];
   if (!enabled) return {};
 
   return sanitizeCustomEnvMap(enabled.customEnv || {}, {
@@ -3045,6 +3048,25 @@ export interface UserQQConfig {
   updatedAt: string | null;
 }
 
+export interface UserDingTalkConfig {
+  clientId: string;
+  clientSecret: string;
+  enabled?: boolean;
+  updatedAt: string | null;
+}
+
+interface StoredDingTalkProviderConfigV1 {
+  version: 1;
+  clientId: string;
+  enabled?: boolean;
+  updatedAt: string;
+  secret: EncryptedSecrets;
+}
+
+interface DingTalkSecretPayload {
+  clientSecret: string;
+}
+
 interface StoredQQProviderConfigV1 {
   version: 1;
   appId: string;
@@ -3382,6 +3404,99 @@ export function saveUserWeChatConfig(
   return normalized;
 }
 
+// ========== DingTalk User IM Config ==========
+
+function encryptDingTalkSecret(
+  payload: DingTalkSecretPayload,
+): EncryptedSecrets {
+  const key = getOrCreateEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+
+  const plaintext = Buffer.from(JSON.stringify(payload), 'utf-8');
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return {
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+    data: encrypted.toString('base64'),
+  };
+}
+
+function decryptDingTalkSecret(
+  secrets: EncryptedSecrets,
+): DingTalkSecretPayload {
+  const key = getOrCreateEncryptionKey();
+  const iv = Buffer.from(secrets.iv, 'base64');
+  const tag = Buffer.from(secrets.tag, 'base64');
+  const encrypted = Buffer.from(secrets.data, 'base64');
+
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+
+  const decrypted = Buffer.concat([
+    decipher.update(encrypted),
+    decipher.final(),
+  ]).toString('utf-8');
+  const parsed = JSON.parse(decrypted) as Record<string, unknown>;
+  return {
+    clientSecret: normalizeSecret(parsed.clientSecret ?? '', 'clientSecret'),
+  };
+}
+
+export function getUserDingTalkConfig(
+  userId: string,
+): UserDingTalkConfig | null {
+  const filePath = path.join(userImDir(userId), 'dingtalk.json');
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (parsed.version !== 1) return null;
+
+    const stored = parsed as unknown as StoredDingTalkProviderConfigV1;
+    const secret = decryptDingTalkSecret(stored.secret);
+    return {
+      clientId: ((stored.clientId as string) ?? '').trim(),
+      clientSecret: secret.clientSecret,
+      enabled: stored.enabled,
+      updatedAt: stored.updatedAt || null,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to read user DingTalk config');
+    return null;
+  }
+}
+
+export function saveUserDingTalkConfig(
+  userId: string,
+  next: Omit<UserDingTalkConfig, 'updatedAt'>,
+): UserDingTalkConfig {
+  const normalized: UserDingTalkConfig = {
+    clientId: ((next.clientId as string) ?? '').trim(),
+    clientSecret: normalizeSecret(next.clientSecret, 'clientSecret'),
+    enabled: next.enabled,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const payload: StoredDingTalkProviderConfigV1 = {
+    version: 1,
+    clientId: normalized.clientId,
+    enabled: normalized.enabled,
+    updatedAt: normalized.updatedAt || new Date().toISOString(),
+    secret: encryptDingTalkSecret({ clientSecret: normalized.clientSecret }),
+  };
+
+  const dir = userImDir(userId);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, 'dingtalk.json');
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, filePath);
+  return normalized;
+}
+
 // ─── System settings (plain JSON, no encryption) ─────────────────
 
 const SYSTEM_SETTINGS_FILE = path.join(
@@ -3652,8 +3767,10 @@ export function saveSystemSettings(
   if (merged.maxConcurrentScripts > 50) merged.maxConcurrentScripts = 50;
   if (merged.scriptTimeout < 5000) merged.scriptTimeout = 5000; // min 5s
   if (merged.scriptTimeout > 600000) merged.scriptTimeout = 600000; // max 10 min
-  if (merged.skillAutoSyncIntervalMinutes < 1) merged.skillAutoSyncIntervalMinutes = 1;
-  if (merged.skillAutoSyncIntervalMinutes > 1440) merged.skillAutoSyncIntervalMinutes = 1440; // max 24h
+  if (merged.skillAutoSyncIntervalMinutes < 1)
+    merged.skillAutoSyncIntervalMinutes = 1;
+  if (merged.skillAutoSyncIntervalMinutes > 1440)
+    merged.skillAutoSyncIntervalMinutes = 1440; // max 24h
   merged.billingMode = 'wallet_first';
   if (merged.billingMinStartBalanceUsd < 0)
     merged.billingMinStartBalanceUsd =
