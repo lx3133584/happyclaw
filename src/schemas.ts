@@ -230,13 +230,12 @@ export const SystemSettingsSchema = z.object({
   loginLockoutMinutes: z.number().int().min(1).max(1440).optional(),
   maxConcurrentScripts: z.number().int().min(1).max(50).optional(),
   scriptTimeout: z.number().int().min(5000).max(600000).optional(),
-  skillAutoSyncEnabled: z.boolean().optional(),
-  skillAutoSyncIntervalMinutes: z.number().int().min(1).max(1440).optional(),
   billingEnabled: z.boolean().optional(),
   billingMode: z.literal('wallet_first').optional(),
   billingMinStartBalanceUsd: z.number().min(0).max(1000000).optional(),
   billingCurrency: z.string().min(1).max(10).optional(),
   billingCurrencyRate: z.number().min(0.0001).max(1000000).optional(),
+  externalClaudeDir: z.string().max(512).optional(),
 });
 
 export const AppearanceConfigSchema = z.object({

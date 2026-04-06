@@ -137,6 +137,7 @@ export function SystemSettingsSection() {
   const [billingMinStartBalanceUsd, setBillingMinStartBalanceUsd] = useState(0.01);
   const [billingCurrency, setBillingCurrency] = useState('USD');
   const [billingCurrencyRate, setBillingCurrencyRate] = useState(1);
+  const [externalClaudeDir, setExternalClaudeDir] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -161,6 +162,7 @@ export function SystemSettingsSection() {
         setBillingMinStartBalanceUsd(data.billingMinStartBalanceUsd ?? 0.01);
         setBillingCurrency(data.billingCurrency ?? 'USD');
         setBillingCurrencyRate(data.billingCurrencyRate ?? 1);
+        setExternalClaudeDir(data.externalClaudeDir ?? '');
       } catch (err) {
         toast.error(getErrorMessage(err, '加载系统参数失败'));
       } finally {
@@ -205,6 +207,7 @@ export function SystemSettingsSection() {
         billingMinStartBalanceUsd,
         billingCurrency,
         billingCurrencyRate,
+        externalClaudeDir,
       };
       for (const f of fields) {
         const val = displayValues[f.key];
@@ -223,6 +226,7 @@ export function SystemSettingsSection() {
       setBillingMinStartBalanceUsd(data.billingMinStartBalanceUsd ?? 0.01);
       setBillingCurrency(data.billingCurrency ?? 'USD');
       setBillingCurrencyRate(data.billingCurrencyRate ?? 1);
+      setExternalClaudeDir(data.externalClaudeDir ?? '');
       // 刷新计费状态，更新导航栏可见性
       loadBillingStatus();
       toast.success('系统参数已保存，新参数将对后续启动的容器/进程生效');

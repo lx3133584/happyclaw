@@ -172,7 +172,6 @@ import {
 import {
   installSkillForUser,
   deleteSkillForUser,
-  syncHostSkillsForUser,
 } from './routes/skills.js';
 import { verifyPairingCode } from './telegram-pairing.js';
 import { sdkQuery } from './sdk-query.js';
@@ -7388,90 +7387,6 @@ async function main(): Promise<void> {
     },
     24 * 60 * 60 * 1000,
   );
-
-  // Skills auto-sync: periodically sync host skills to all admin users
-  let skillAutoSyncTimer: ReturnType<typeof setInterval> | null = null;
-
-  function startSkillAutoSync(): void {
-    stopSkillAutoSync();
-    const settings = getSystemSettings();
-    if (!settings.skillAutoSyncEnabled) return;
-
-    const intervalMs = settings.skillAutoSyncIntervalMinutes * 60 * 1000;
-    logger.info(
-      { intervalMinutes: settings.skillAutoSyncIntervalMinutes },
-      'Starting skill auto-sync timer',
-    );
-
-    const runSync = async () => {
-      const currentSettings = getSystemSettings();
-      if (!currentSettings.skillAutoSyncEnabled) {
-        stopSkillAutoSync();
-        return;
-      }
-
-      try {
-        const { users: adminUsers } = listUsers({
-          role: 'admin',
-          status: 'active',
-        });
-        for (const admin of adminUsers) {
-          try {
-            const result = await syncHostSkillsForUser(admin.id);
-            const { added, updated, deleted } = result.stats;
-            if (added > 0 || updated > 0 || deleted > 0) {
-              logger.info(
-                {
-                  userId: admin.id,
-                  username: admin.username,
-                  ...result.stats,
-                  total: result.total,
-                },
-                'Skill auto-sync completed with changes',
-              );
-            }
-          } catch (err) {
-            logger.warn(
-              { err, userId: admin.id },
-              'Skill auto-sync failed for user',
-            );
-          }
-        }
-      } catch (err) {
-        logger.error({ err }, 'Skill auto-sync failed');
-      }
-    };
-
-    // Run once immediately, then on interval
-    void runSync();
-    skillAutoSyncTimer = setInterval(() => void runSync(), intervalMs);
-  }
-
-  function stopSkillAutoSync(): void {
-    if (skillAutoSyncTimer) {
-      clearInterval(skillAutoSyncTimer);
-      skillAutoSyncTimer = null;
-    }
-  }
-
-  // Initial start + restart when settings change (check every 60s)
-  const initSettings = getSystemSettings();
-  let _lastSkillSyncEnabled: boolean = initSettings.skillAutoSyncEnabled;
-  let _lastSkillSyncInterval: number =
-    initSettings.skillAutoSyncIntervalMinutes;
-  startSkillAutoSync();
-
-  setInterval(() => {
-    const settings = getSystemSettings();
-    if (
-      settings.skillAutoSyncEnabled !== _lastSkillSyncEnabled ||
-      settings.skillAutoSyncIntervalMinutes !== _lastSkillSyncInterval
-    ) {
-      _lastSkillSyncEnabled = settings.skillAutoSyncEnabled;
-      _lastSkillSyncInterval = settings.skillAutoSyncIntervalMinutes;
-      startSkillAutoSync();
-    }
-  }, 60 * 1000);
 
   await ensureDockerRunning();
 

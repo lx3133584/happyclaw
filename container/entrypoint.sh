@@ -29,7 +29,7 @@ fi
 # Only remove entries that conflict with mounted skills (non-symlink with same name),
 # preserving any skills the agent created directly in .claude/skills/.
 mkdir -p /home/node/.claude/skills
-for dir in /opt/builtin-skills /workspace/project-skills /workspace/user-skills; do
+for dir in /opt/builtin-skills /workspace/external-skills /workspace/project-skills /workspace/user-skills; do
   if [ -d "$dir" ]; then
     for skill in "$dir"/*/; do
       if [ -d "$skill" ]; then

@@ -5,9 +5,8 @@ export interface Skill {
   id: string;
   name: string;
   description: string;
-  source: 'user' | 'project';
+  source: 'user' | 'project' | 'external';
   enabled: boolean;
-  syncedFromHost?: boolean;
   packageName?: string;
   installedAt?: string;
   userInvocable: boolean;
@@ -39,38 +38,22 @@ export interface SearchResultDetail {
   features: string[];
 }
 
-interface SyncHostResult {
-  stats: { added: number; updated: number; deleted: number; skipped: number };
-  total: number;
-}
-
-interface SyncStatus {
-  lastSyncAt: string | null;
-  syncedCount: number;
-  autoSyncEnabled: boolean;
-  autoSyncIntervalMinutes: number;
-}
-
 interface SkillsState {
   skills: Skill[];
   loading: boolean;
   error: string | null;
   installing: boolean;
-  syncing: boolean;
   searching: boolean;
   searchResults: SearchResult[];
   searchDetails: Record<string, SearchResultDetail | null>;
   searchDetailLoading: Record<string, boolean>;
-  syncStatus: SyncStatus | null;
 
   loadSkills: () => Promise<void>;
   toggleSkill: (id: string, enabled: boolean) => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
   installSkill: (pkg: string) => Promise<void>;
   reinstallSkill: (id: string) => Promise<void>;
-  syncHostSkills: () => Promise<SyncHostResult>;
-  loadSyncStatus: () => Promise<void>;
-  setAutoSync: (enabled: boolean, intervalMinutes?: number) => Promise<void>;
+  deleteAllUserSkills: () => Promise<number>;
   getSkillDetail: (id: string) => Promise<SkillDetail>;
   searchSkills: (query: string) => Promise<void>;
   fetchSearchDetail: (result: SearchResult) => Promise<void>;
@@ -81,12 +64,10 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
   loading: false,
   error: null,
   installing: false,
-  syncing: false,
   searching: false,
   searchResults: [],
   searchDetails: {},
   searchDetailLoading: {},
-  syncStatus: null,
 
   loadSkills: async () => {
     set({ loading: true });
@@ -145,50 +126,10 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     }
   },
 
-  syncHostSkills: async () => {
-    set({ syncing: true, error: null });
-    try {
-      const result = await api.post<SyncHostResult>('/api/skills/sync-host', {});
-      await get().loadSkills();
-      await get().loadSyncStatus();
-      return result;
-    } catch (err: any) {
-      set({ error: err?.message || '同步失败，请稍后重试' });
-      throw err;
-    } finally {
-      set({ syncing: false });
-    }
-  },
-
-  loadSyncStatus: async () => {
-    try {
-      const data = await api.get<SyncStatus>('/api/skills/sync-status');
-      set({ syncStatus: data });
-    } catch {
-      // ignore — non-critical
-    }
-  },
-
-  setAutoSync: async (enabled: boolean, intervalMinutes?: number) => {
-    try {
-      const payload: Record<string, unknown> = { autoSyncEnabled: enabled };
-      if (intervalMinutes !== undefined) {
-        payload.autoSyncIntervalMinutes = intervalMinutes;
-      }
-      const result = await api.put<{ autoSyncEnabled: boolean; autoSyncIntervalMinutes: number }>(
-        '/api/skills/sync-settings',
-        payload,
-      );
-      const prev = get().syncStatus;
-      set({
-        syncStatus: prev
-          ? { ...prev, autoSyncEnabled: result.autoSyncEnabled, autoSyncIntervalMinutes: result.autoSyncIntervalMinutes }
-          : { lastSyncAt: null, syncedCount: 0, autoSyncEnabled: result.autoSyncEnabled, autoSyncIntervalMinutes: result.autoSyncIntervalMinutes },
-      });
-    } catch (err: any) {
-      set({ error: err?.message || '保存同步设置失败' });
-      throw err;
-    }
+  deleteAllUserSkills: async () => {
+    const result = await api.delete<{ deleted: number }>('/api/skills/user-all');
+    await get().loadSkills();
+    return result.deleted;
   },
 
   getSkillDetail: async (id: string) => {

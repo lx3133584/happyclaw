@@ -11,6 +11,7 @@ interface SkillCardProps {
 const SOURCE_LABELS: Record<Skill['source'], string> = {
   user: '用户级',
   project: '项目级',
+  external: '宿主机',
 };
 
 export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
@@ -39,11 +40,6 @@ export function SkillCard({ skill, selected, onSelect }: SkillCardProps) {
             >
               {SOURCE_LABELS[skill.source]}
             </span>
-            {skill.syncedFromHost && (
-              <span className="px-2 py-0.5 rounded text-xs font-medium bg-warning-bg text-warning">
-                已同步
-              </span>
-            )}
             {skill.userInvocable && (
               <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
                 可调用

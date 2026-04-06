@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 import { ASSISTANT_NAME, DATA_DIR } from './config.js';
 import { logger } from './logger.js';
@@ -3377,15 +3378,14 @@ export interface SystemSettings {
   loginLockoutMinutes: number;
   maxConcurrentScripts: number;
   scriptTimeout: number;
-  // Skills auto-sync
-  skillAutoSyncEnabled: boolean;
-  skillAutoSyncIntervalMinutes: number;
   // Billing
   billingEnabled: boolean;
   billingMode: 'wallet_first';
   billingMinStartBalanceUsd: number;
   billingCurrency: string;
   billingCurrencyRate: number;
+  // External Claude directory (admin only)
+  externalClaudeDir: string;
 }
 
 const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
@@ -3398,13 +3398,12 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   loginLockoutMinutes: 15,
   maxConcurrentScripts: 10,
   scriptTimeout: 60000,
-  skillAutoSyncEnabled: false,
-  skillAutoSyncIntervalMinutes: 10,
   billingEnabled: false,
   billingMode: 'wallet_first',
   billingMinStartBalanceUsd: 0.01,
   billingCurrency: 'USD',
   billingCurrencyRate: 1,
+  externalClaudeDir: '',
 };
 
 function parseIntEnv(envVar: string | undefined, fallback: number): number {
@@ -3469,15 +3468,6 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.scriptTimeout === 'number' && raw.scriptTimeout > 0
         ? raw.scriptTimeout
         : DEFAULT_SYSTEM_SETTINGS.scriptTimeout,
-    skillAutoSyncEnabled:
-      typeof raw.skillAutoSyncEnabled === 'boolean'
-        ? raw.skillAutoSyncEnabled
-        : DEFAULT_SYSTEM_SETTINGS.skillAutoSyncEnabled,
-    skillAutoSyncIntervalMinutes:
-      typeof raw.skillAutoSyncIntervalMinutes === 'number' &&
-      raw.skillAutoSyncIntervalMinutes >= 1
-        ? raw.skillAutoSyncIntervalMinutes
-        : DEFAULT_SYSTEM_SETTINGS.skillAutoSyncIntervalMinutes,
     billingEnabled:
       typeof raw.billingEnabled === 'boolean'
         ? raw.billingEnabled
@@ -3496,6 +3486,10 @@ function readSystemSettingsFromFile(): SystemSettings | null {
       typeof raw.billingCurrencyRate === 'number' && raw.billingCurrencyRate > 0
         ? raw.billingCurrencyRate
         : DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
+    externalClaudeDir:
+      typeof raw.externalClaudeDir === 'string'
+        ? raw.externalClaudeDir.trim()
+        : DEFAULT_SYSTEM_SETTINGS.externalClaudeDir,
   };
 }
 
@@ -3537,13 +3531,6 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.SCRIPT_TIMEOUT,
       DEFAULT_SYSTEM_SETTINGS.scriptTimeout,
     ),
-    skillAutoSyncEnabled:
-      process.env.SKILL_AUTO_SYNC_ENABLED === 'true' ||
-      DEFAULT_SYSTEM_SETTINGS.skillAutoSyncEnabled,
-    skillAutoSyncIntervalMinutes: parseIntEnv(
-      process.env.SKILL_AUTO_SYNC_INTERVAL_MINUTES,
-      DEFAULT_SYSTEM_SETTINGS.skillAutoSyncIntervalMinutes,
-    ),
     billingEnabled:
       process.env.BILLING_ENABLED === 'true' ||
       DEFAULT_SYSTEM_SETTINGS.billingEnabled,
@@ -3558,6 +3545,8 @@ function buildEnvFallbackSettings(): SystemSettings {
       process.env.BILLING_CURRENCY_RATE,
       DEFAULT_SYSTEM_SETTINGS.billingCurrencyRate,
     ),
+    externalClaudeDir:
+      process.env.EXTERNAL_CLAUDE_DIR || DEFAULT_SYSTEM_SETTINGS.externalClaudeDir,
   };
 }
 
@@ -3600,6 +3589,12 @@ export function getSystemSettings(): SystemSettings {
   return settings;
 }
 
+/** 获取生效的外部 Claude 目录（externalClaudeDir 空时 fallback 到 ~/.claude） */
+export function getEffectiveExternalDir(): string {
+  const settings = getSystemSettings();
+  return settings.externalClaudeDir || path.join(os.homedir(), '.claude');
+}
+
 export function saveSystemSettings(
   partial: Partial<SystemSettings>,
 ): SystemSettings {
@@ -3630,16 +3625,27 @@ export function saveSystemSettings(
   if (merged.maxConcurrentScripts > 50) merged.maxConcurrentScripts = 50;
   if (merged.scriptTimeout < 5000) merged.scriptTimeout = 5000; // min 5s
   if (merged.scriptTimeout > 600000) merged.scriptTimeout = 600000; // max 10 min
-  if (merged.skillAutoSyncIntervalMinutes < 1)
-    merged.skillAutoSyncIntervalMinutes = 1;
-  if (merged.skillAutoSyncIntervalMinutes > 1440)
-    merged.skillAutoSyncIntervalMinutes = 1440; // max 24h
   merged.billingMode = 'wallet_first';
   if (merged.billingMinStartBalanceUsd < 0)
     merged.billingMinStartBalanceUsd =
       DEFAULT_SYSTEM_SETTINGS.billingMinStartBalanceUsd;
   if (merged.billingMinStartBalanceUsd > 1000000)
     merged.billingMinStartBalanceUsd = 1000000;
+
+  // Validate externalClaudeDir: must be empty or an absolute directory path
+  if (merged.externalClaudeDir) {
+    const trimmed = merged.externalClaudeDir.trim();
+    if (trimmed) {
+      try {
+        const resolved = fs.realpathSync(trimmed);
+        merged.externalClaudeDir = fs.statSync(resolved).isDirectory() ? resolved : '';
+      } catch {
+        merged.externalClaudeDir = '';
+      }
+    } else {
+      merged.externalClaudeDir = '';
+    }
+  }
 
   fs.mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
   const tmp = `${SYSTEM_SETTINGS_FILE}.tmp`;
