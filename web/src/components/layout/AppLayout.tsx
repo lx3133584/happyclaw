@@ -8,6 +8,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { useBillingStore } from '../../stores/billing';
 import { useGroupsStore } from '../../stores/groups';
 import { useChatStore } from '../../stores/chat';
+import { useAuthStore } from '../../stores/auth';
 
 export function AppLayout() {
   const location = useLocation();
@@ -72,6 +73,14 @@ export function AppLayout() {
     });
     return () => { unsub(); };
   }, []);
+
+  // 更新 document.title，显示未读回复数
+  const totalUnread = useChatStore((s) => Object.values(s.unreadReplies).reduce((sum, n) => sum + n, 0));
+  const appearance = useAuthStore((s) => s.appearance);
+  useEffect(() => {
+    const appName = appearance?.appName || 'HappyClaw';
+    document.title = totalUnread > 0 ? `(${totalUnread}) ${appName}` : appName;
+  }, [totalUnread, appearance?.appName]);
 
   // 全局监听 agent_status，确保不在 ChatView 页面时也能更新 sub-agent 状态
   useEffect(() => {

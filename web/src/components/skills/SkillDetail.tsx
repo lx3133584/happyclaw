@@ -87,13 +87,8 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
                     : 'bg-muted text-muted-foreground'
                 }`}
               >
-                {detail.source === 'user' ? '用户级' : '项目级'}
+                {detail.source === 'user' ? '用户级' : detail.source === 'external' ? '宿主机' : '项目级'}
               </span>
-              {detail.syncedFromHost && (
-                <span className="px-2 py-0.5 rounded text-xs font-medium bg-warning-bg text-warning">
-                  已同步
-                </span>
-              )}
               {detail.userInvocable && (
                 <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
                   可调用
@@ -244,12 +239,12 @@ export function SkillDetail({ skillId, onDeleted }: SkillDetailProps) {
       <div className="p-6 bg-muted">
         <p className="text-sm text-muted-foreground">
           {detail.source === 'user'
-            ? detail.syncedFromHost
-              ? '从宿主机同步，可启停和删除。重新同步时会恢复'
-              : detail.packageName
-                ? `通过 ${detail.packageName} 安装，可重新安装以获取最新版本`
-                : '用户级技能可启用/禁用或删除，也可在对话中让 AI 安装或卸载技能'
-            : '项目级技能为只读，不可修改或删除'}
+            ? detail.packageName
+              ? `通过 ${detail.packageName} 安装，可重新安装以获取最新版本`
+              : '用户级技能可启用/禁用或删除，也可在对话中让 AI 安装或卸载技能'
+            : detail.source === 'external'
+              ? '宿主机技能为只读，来自 ~/.claude/skills/'
+              : '项目级技能为只读，不可修改或删除'}
         </p>
       </div>
     </Card>

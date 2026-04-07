@@ -13,6 +13,11 @@ umask 0000
 chown -R node:node /home/node/.claude 2>/dev/null || true
 chown -R node:node /workspace/group /workspace/global /workspace/memory /workspace/ipc 2>/dev/null || true
 
+# Mark mounted directories as safe for git (CVE-2022-24765 ownership check).
+# Host uid may differ from container node user, causing git to refuse operations.
+# 使用通配符 '*' 因为挂载路径动态（extra mounts、customCwd），无法枚举具体目录。
+git config --global --add safe.directory '*' 2>/dev/null || true
+
 # Source environment variables from mounted env file
 if [ -f /workspace/env-dir/env ]; then
   set -a
@@ -24,7 +29,7 @@ fi
 # Only remove entries that conflict with mounted skills (non-symlink with same name),
 # preserving any skills the agent created directly in .claude/skills/.
 mkdir -p /home/node/.claude/skills
-for dir in /opt/builtin-skills /workspace/project-skills /workspace/user-skills; do
+for dir in /opt/builtin-skills /workspace/external-skills /workspace/project-skills /workspace/user-skills; do
   if [ -d "$dir" ]; then
     for skill in "$dir"/*/; do
       if [ -d "$skill" ]; then

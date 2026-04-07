@@ -57,6 +57,12 @@ export interface StreamEvent {
     costUSD: number;
     durationMs: number;
     numTurns: number;
-    modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }>;
+    modelUsage?: Record<string, {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+      costUSD: number;
+    }>;
   };
 }

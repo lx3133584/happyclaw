@@ -18,15 +18,9 @@ function getContainer(): HTMLDivElement {
   return container;
 }
 
-export function showToast(
-  title: string,
-  body?: string,
-  durationMs = 5000,
-  link?: { text: string; url: string },
-): void {
+/** Create a toast element with shared styling and animation. Returns { el, dismiss }. */
+function createToastElement(extraCss = ''): { el: HTMLDivElement; dismiss: () => void } {
   const c = getContainer();
-
-  // Evict oldest toasts when at capacity
   while (c.childElementCount >= MAX_TOASTS && c.firstChild) {
     c.removeChild(c.firstChild);
   }
@@ -36,7 +30,30 @@ export function showToast(
     'pointer-events:auto;max-width:360px;padding:12px 16px;border-radius:8px;' +
     'background:#1a1a2e;color:#e0e0e0;box-shadow:0 4px 12px rgba(0,0,0,0.3);' +
     'font-size:14px;line-height:1.4;opacity:0;transform:translateX(40px);' +
-    'transition:opacity 0.3s,transform 0.3s;';
+    'transition:opacity 0.3s,transform 0.3s;' + extraCss;
+
+  c.appendChild(el);
+  requestAnimationFrame(() => {
+    el.style.opacity = '1';
+    el.style.transform = 'translateX(0)';
+  });
+
+  const dismiss = () => {
+    el.style.opacity = '0';
+    el.style.transform = 'translateX(40px)';
+    setTimeout(() => el.remove(), 300);
+  };
+
+  return { el, dismiss };
+}
+
+export function showToast(
+  title: string,
+  body?: string,
+  durationMs = 5000,
+  link?: { text: string; url: string },
+): void {
+  const { el, dismiss } = createToastElement();
 
   const titleEl = document.createElement('div');
   titleEl.style.fontWeight = '600';
@@ -62,17 +79,7 @@ export function showToast(
     el.appendChild(linkEl);
   }
 
-  c.appendChild(el);
-  requestAnimationFrame(() => {
-    el.style.opacity = '1';
-    el.style.transform = 'translateX(0)';
-  });
-
-  setTimeout(() => {
-    el.style.opacity = '0';
-    el.style.transform = 'translateX(40px)';
-    setTimeout(() => el.remove(), 300);
-  }, durationMs);
+  setTimeout(dismiss, durationMs);
 }
 
 /**
@@ -134,6 +141,36 @@ function isNoticeOwner(): boolean {
   } catch {
     return claimOwnershipIfVisible();
   }
+}
+
+/** One-time prompt to request desktop notification permission. */
+let notificationPromptShown = false;
+
+export function showNotificationPromptToast(): void {
+  if (notificationPromptShown) return;
+  if (typeof Notification === 'undefined') return;
+  if (Notification.permission !== 'default') return;
+  notificationPromptShown = true;
+
+  const { el, dismiss } = createToastElement('display:flex;align-items:center;gap:12px;');
+
+  const textEl = document.createElement('span');
+  textEl.style.flex = '1';
+  textEl.textContent = '开启桌面通知，对话完成时提醒你';
+  el.appendChild(textEl);
+
+  const btn = document.createElement('button');
+  btn.textContent = '开启';
+  btn.style.cssText =
+    'flex-shrink:0;padding:4px 10px;border-radius:5px;border:none;' +
+    'background:#5eead4;color:#0f172a;font-size:13px;font-weight:600;cursor:pointer;';
+  btn.addEventListener('click', () => {
+    Notification.requestPermission();
+    dismiss();
+  });
+  el.appendChild(btn);
+
+  setTimeout(dismiss, 12000);
 }
 
 export function shouldEmitBackgroundTaskNotice(taskId: string): boolean {

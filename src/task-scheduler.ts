@@ -277,6 +277,8 @@ async function runTask(
       result: null,
       error: `Workspace group not found: ${workspace.jid}`,
     });
+    const nextRun = options?.manualRun ? task.next_run : computeNextRun(task);
+    updateTaskAfterRun(task.id, nextRun, `Error: Workspace group not found: ${workspace.jid}`);
     runningTaskIds.delete(task.id);
     return;
   }
@@ -359,7 +361,8 @@ async function runTask(
   const finalizeRunLog = () => {
     if (runLogFinalized) return;
     runLogFinalized = true;
-    runningTaskIds.delete(task.id);
+    // 注意：runningTaskIds.delete() 不在此处调用，
+    // 必须等到 updateTaskAfterRun() ��新 next_run 后才能释放防重复屏障（#363）
     const durationMs = lastOutputTime - startTime;
     updateTaskRunLog(runLogId, {
       duration_ms: durationMs,
@@ -472,7 +475,6 @@ async function runTask(
     lastOutputTime = Date.now();
     logger.error({ taskId: task.id, error }, 'Task failed');
   } finally {
-    runningTaskIds.delete(task.id);
     // Clean up isolated task IPC directory
     if (options?.taskRunId) {
       const taskRunDir = path.join(
@@ -501,7 +503,11 @@ async function runTask(
     : result
       ? result.slice(0, 200)
       : 'Completed';
-  updateTaskAfterRun(task.id, nextRun, resultSummary);
+  try {
+    updateTaskAfterRun(task.id, nextRun, resultSummary);
+  } finally {
+    runningTaskIds.delete(task.id);
+  }
 
   if (deps.storeResultAndNotify && (result || error)) {
     const text = error
@@ -611,6 +617,8 @@ async function runScriptTask(
       result: null,
       error: 'script_command is empty',
     });
+    const nextRun = manualRun ? task.next_run : computeNextRun(task);
+    updateTaskAfterRun(task.id, nextRun, 'Error: script_command is empty');
     runningTaskIds.delete(task.id);
     return;
   }
@@ -673,8 +681,6 @@ async function runScriptTask(
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
     logger.error({ taskId: task.id, error }, 'Script task failed');
-  } finally {
-    runningTaskIds.delete(task.id);
   }
 
   const durationMs = Date.now() - startTime;
@@ -693,7 +699,11 @@ async function runScriptTask(
     : result
       ? result.slice(0, 200)
       : 'Completed';
-  updateTaskAfterRun(task.id, nextRun, resultSummary);
+  try {
+    updateTaskAfterRun(task.id, nextRun, resultSummary);
+  } finally {
+    runningTaskIds.delete(task.id);
+  }
 }
 
 /**
@@ -707,6 +717,8 @@ async function runGroupModeTask(
   manualRun = false,
 ): Promise<void> {
   const startTime = Date.now();
+  runningTaskIds.add(task.id);
+  let resultSummary = '已注入到源工作区';
 
   try {
     // Resolve task owner for sender attribution
@@ -742,8 +754,8 @@ async function runGroupModeTask(
       error: null,
     });
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    logger.error({ taskId: task.id, error }, 'Group-mode task injection failed');
+    resultSummary = `Error: ${err instanceof Error ? err.message : String(err)}`;
+    logger.error({ taskId: task.id, error: resultSummary }, 'Group-mode task injection failed');
 
     logTaskRun({
       task_id: task.id,
@@ -751,14 +763,16 @@ async function runGroupModeTask(
       duration_ms: Date.now() - startTime,
       status: 'error',
       result: null,
-      error,
+      error: resultSummary,
     });
+  } finally {
+    try {
+      const nextRun = manualRun ? task.next_run : computeNextRun(task);
+      updateTaskAfterRun(task.id, nextRun, resultSummary);
+    } finally {
+      runningTaskIds.delete(task.id);
+    }
   }
-
-  // Update next_run (manualRun preserves original schedule)
-  const nextRun = manualRun ? task.next_run : computeNextRun(task);
-  const resultSummary = '已注入到源工作区';
-  updateTaskAfterRun(task.id, nextRun, resultSummary);
 }
 
 let schedulerRunning = false;

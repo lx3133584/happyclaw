@@ -1435,12 +1435,14 @@ async function runQuery(
       const sdkUsage = resultMsg.usage as Record<string, number> | undefined;
       const sdkModelUsage = resultMsg.modelUsage as Record<string, Record<string, number>> | undefined;
       if (sdkUsage) {
-        const modelUsageSummary: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }> = {};
+        const modelUsageSummary: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUSD: number }> = {};
         if (sdkModelUsage && Object.keys(sdkModelUsage).length > 0) {
           for (const [model, mu] of Object.entries(sdkModelUsage)) {
             modelUsageSummary[model] = {
               inputTokens: mu.inputTokens || 0,
               outputTokens: mu.outputTokens || 0,
+              cacheReadInputTokens: mu.cacheReadInputTokens || 0,
+              cacheCreationInputTokens: mu.cacheCreationInputTokens || 0,
               costUSD: mu.costUSD || 0,
             };
           }
@@ -1449,6 +1451,8 @@ async function runQuery(
           modelUsageSummary[CLAUDE_MODEL] = {
             inputTokens: sdkUsage.input_tokens || 0,
             outputTokens: sdkUsage.output_tokens || 0,
+            cacheReadInputTokens: sdkUsage.cache_read_input_tokens || 0,
+            cacheCreationInputTokens: sdkUsage.cache_creation_input_tokens || 0,
             costUSD: (resultMsg.total_cost_usd as number) || 0,
           };
         }
