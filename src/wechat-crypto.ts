@@ -7,6 +7,14 @@ import { logger } from './logger.js';
 // CDN Base URL
 const DEFAULT_CDN_BASE = 'https://novac2c.cdn.weixin.qq.com/c2c';
 
+// iLink-App identity headers (mirrors openclaw-weixin 2.1.1 upstream).
+// Server-side file upload (media_type=3) validates these headers; without them
+// getuploadurl returns {"ret":-1}. Image uploads (media_type=1) don't require
+// them, but it's harmless to send for all calls.
+const ILINK_APP_ID = 'bot';
+// uint32 encoded as 0x00MMNNPP — "2.1.1" → (2<<16)|(1<<8)|1 = 131329
+const ILINK_APP_CLIENT_VERSION = '131329';
+
 /** AES-128-ECB 加密（PKCS7 padding） */
 export function encryptAesEcb(plaintext: Buffer, key: Buffer): Buffer {
   const cipher = crypto.createCipheriv('aes-128-ecb', key, null);
@@ -180,6 +188,8 @@ export async function getUploadUrl(params: {
       Authorization: `Bearer ${params.token}`,
       AuthorizationType: 'ilink_bot_token',
       'X-WECHAT-UIN': xWechatUin,
+      'iLink-App-Id': ILINK_APP_ID,
+      'iLink-App-ClientVersion': ILINK_APP_CLIENT_VERSION,
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
@@ -229,7 +239,9 @@ export async function uploadMediaBuffer(params: {
   const aeskeyBuf = crypto.randomBytes(16);
   const aeskeyHex = aeskeyBuf.toString('hex');
   const filesize = aesEcbPaddedSize(rawsize);
-  const filekey = `${Date.now()}_${params.fileName}`;
+  // filekey is a 32-char hex string — the server rejects non-ASCII chars
+  // (e.g. Chinese filenames) with {"ret":-1}. Mirrors openclaw-weixin upstream.
+  const filekey = crypto.randomBytes(16).toString('hex');
 
   const { uploadParam } = await getUploadUrl({
     baseUrl: params.baseUrl,

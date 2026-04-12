@@ -12,6 +12,7 @@
  * CDN URL:  https://novac2c.cdn.weixin.qq.com/c2c
  */
 import crypto from 'crypto';
+import fs from 'fs';
 import {
   storeChatMetadata,
   storeMessageDirect,
@@ -22,7 +23,11 @@ import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
 import { saveDownloadedFile, MAX_FILE_SIZE } from './im-downloader.js';
 import { detectImageMimeType } from './image-detector.js';
-import { downloadAndDecryptMedia, uploadMediaBuffer } from './wechat-crypto.js';
+import {
+  downloadAndDecryptMedia,
+  uploadMediaBuffer,
+  uploadMediaFile,
+} from './wechat-crypto.js';
 import { markdownToPlainText, splitTextChunks } from './im-utils.js';
 
 // ─── Constants ──────────────────────────────────────────────────
@@ -99,6 +104,11 @@ export interface WeChatConnection {
     mimeType: string,
     caption?: string,
     fileName?: string,
+  ): Promise<void>;
+  sendFile(
+    chatId: string,
+    filePath: string,
+    fileName: string,
   ): Promise<void>;
   sendTyping(chatId: string, isTyping: boolean): Promise<void>;
   isConnected(): boolean;
@@ -944,6 +954,88 @@ export function createWeChatConnection(
         );
       } catch (err) {
         logger.error({ err, chatId }, 'Failed to send WeChat image');
+        throw err;
+      }
+    },
+
+    async sendFile(
+      chatId: string,
+      filePath: string,
+      fileName: string,
+    ): Promise<void> {
+      const userId = chatId;
+
+      const contextToken = contextTokenCache.get(userId);
+      if (!contextToken) {
+        logger.warn(
+          { chatId },
+          'No context_token for WeChat user, cannot send file',
+        );
+        return;
+      }
+
+      const stat = await fs.promises.stat(filePath);
+      if (stat.size > MAX_FILE_SIZE) {
+        throw new Error(
+          `WeChat file size ${stat.size} exceeds max ${MAX_FILE_SIZE}`,
+        );
+      }
+
+      try {
+        // Upload raw bytes to WeChat CDN as FILE attachment (mediaType=3).
+        const upload = await uploadMediaFile({
+          filePath,
+          toUserId: userId,
+          baseUrl,
+          token: config.botToken,
+          cdnBaseUrl,
+          mediaType: 3, // MEDIA_FILE
+        });
+
+        const clientId = String(crypto.randomBytes(4).readUInt32BE(0));
+        const resp = await apiPost<{
+          ret?: number;
+          errcode?: number;
+          errmsg?: string;
+        }>('ilink/bot/sendmessage', {
+          msg: {
+            to_user_id: userId,
+            context_token: contextToken,
+            item_list: [
+              {
+                type: MESSAGE_ITEM_TYPE_FILE,
+                file_item: {
+                  media: {
+                    encrypt_query_param: upload.downloadEncryptedQueryParam,
+                    aes_key: upload.aeskey,
+                    encrypt_type: 1,
+                  },
+                  file_name: fileName,
+                  // 'len' is the raw (plaintext) file size as a string — per
+                  // nightsailer/wechat-clawbot reference.
+                  len: String(upload.fileSize),
+                },
+              },
+            ],
+            message_type: MESSAGE_TYPE_BOT,
+            message_state: MESSAGE_STATE_FINISH,
+            client_id: clientId,
+          },
+          base_info: baseInfo(),
+        });
+
+        if (resp.ret !== undefined && resp.ret !== 0) {
+          throw new Error(
+            `sendFile failed: ret=${resp.ret} errcode=${resp.errcode} errmsg=${resp.errmsg ?? ''}`,
+          );
+        }
+
+        logger.info(
+          { chatId, size: stat.size, fileName },
+          'WeChat file sent',
+        );
+      } catch (err) {
+        logger.error({ err, chatId, fileName }, 'Failed to send WeChat file');
         throw err;
       }
     },
