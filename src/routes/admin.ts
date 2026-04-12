@@ -13,7 +13,7 @@ import {
   AdminPatchUserSchema,
   InviteCreateSchema,
 } from '../schemas.js';
-import { isUsernameConflictError, toUserPublic } from './auth.js';
+import { isUsernameConflictError, toUserPublic, setSessionCookie } from './auth.js';
 import type {
   AuthUser,
   PermissionTemplateKey,
@@ -30,6 +30,7 @@ import {
   restoreUser,
 
   deleteUserSessionsByUserId,
+  createUserSession,
   getActiveAdminCount,
   logAuthEvent,
   getAllInviteCodes,
@@ -44,6 +45,8 @@ import {
   generateUserId,
   hashPassword,
   generateInviteCode,
+  generateSessionToken,
+  sessionExpiresAt,
 } from '../auth.js';
 import {
   normalizePermissions,
@@ -363,9 +366,15 @@ adminRoutes.patch(
     ) {
       updates.disable_reason = validation.data.disable_reason;
     }
+    const isSelfPasswordReset =
+      validation.data.password !== undefined && id === actor.id;
     if (validation.data.password !== undefined) {
       updates.password_hash = await hashPassword(validation.data.password);
-      updates.must_change_password = true;
+      // Only force password change when resetting OTHER user's password
+      // Admin resetting their own password should not trigger forced change
+      if (id !== actor.id) {
+        updates.must_change_password = true;
+      }
       invalidateUserSessions(id);
       deleteUserSessionsByUserId(id);
       logAuthEvent({
@@ -396,6 +405,34 @@ adminRoutes.patch(
 
     updateUserFields(id, updates);
     const updated = getUserById(id)!;
+
+    // When admin resets their own password, recreate session to avoid logout
+    if (isSelfPasswordReset) {
+      const now = new Date().toISOString();
+      const ip = getClientIp(c);
+      const ua = c.req.header('user-agent') || null;
+      const newToken = generateSessionToken();
+      createUserSession({
+        id: newToken,
+        user_id: actor.id,
+        ip_address: ip,
+        user_agent: ua,
+        created_at: now,
+        expires_at: sessionExpiresAt(),
+        last_active_at: now,
+      });
+      return new Response(
+        JSON.stringify({ success: true, user: toUserPublic(updated) }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'Set-Cookie': setSessionCookie(c, newToken),
+          },
+        },
+      );
+    }
+
     return c.json({ success: true, user: toUserPublic(updated) });
   },
 );
