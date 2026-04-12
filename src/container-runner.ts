@@ -1035,7 +1035,9 @@ export async function runHostAgent(
     }
   }
 
-  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  // Always store logs in data/groups/{folder}/logs/, not in customCwd
+  const logsBaseDir = path.join(defaultGroupDir, 'logs');
+  fs.mkdirSync(logsBaseDir, { recursive: true });
   fs.mkdirSync(path.join(DATA_DIR, 'memory', group.folder), {
     recursive: true,
   });
@@ -1338,7 +1340,7 @@ export async function runHostAgent(
       'Spawning host agent',
     );
 
-    const logsDir = path.join(groupDir, 'logs');
+    const logsDir = logsBaseDir;
 
     const hostResult = await new Promise<ContainerOutput>((resolve) => {
       let settled = false;
