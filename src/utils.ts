@@ -77,6 +77,19 @@ export function getClientIp(c: any): string {
   return connInfo || 'unknown';
 }
 
+/** Detect if the current request arrived over HTTPS (direct or behind proxy) */
+export function isSecureRequest(c: any): boolean {
+  if (TRUST_PROXY) {
+    const proto = c.req.header('x-forwarded-proto');
+    if (proto === 'https') return true;
+  }
+  try {
+    const url = new URL(c.req.url, 'http://localhost');
+    if (url.protocol === 'https:') return true;
+  } catch { /* ignore */ }
+  return false;
+}
+
 /** Create IPC + session directories for an agent. */
 export function ensureAgentDirectories(
   folder: string,

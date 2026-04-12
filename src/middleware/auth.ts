@@ -17,9 +17,9 @@ import { hasPermission } from '../permissions.js';
 import {
   SESSION_COOKIE_NAME_SECURE,
   SESSION_COOKIE_NAME_PLAIN,
-  TRUST_PROXY,
 } from '../config.js';
 import { logger } from '../logger.js';
+import { isSecureRequest } from '../utils.js';
 
 /**
  * Extract ALL values for a given cookie name from the raw Cookie header.
@@ -27,7 +27,7 @@ import { logger } from '../logger.js';
  * when old and new cookies coexist. parseCookie() only keeps one value,
  * but we need to try all of them to handle migration scenarios.
  */
-function getAllCookieValues(cookieHeader: string | undefined, name: string): string[] {
+export function getAllCookieValues(cookieHeader: string | undefined, name: string): string[] {
   if (!cookieHeader) return [];
   const values: string[] = [];
   const prefix = name + '=';
@@ -45,7 +45,7 @@ function getAllCookieValues(cookieHeader: string | undefined, name: string): str
  * Returns { token, needsUpgrade } where needsUpgrade is true when
  * an unsigned legacy cookie was accepted.
  */
-function tryVerifyAny(values: string[]): { token: string; needsUpgrade: boolean } | null {
+export function tryVerifyAny(values: string[]): { token: string; needsUpgrade: boolean } | null {
   for (const v of values) {
     const token = verifySessionToken(v);
     if (token) {
@@ -55,18 +55,6 @@ function tryVerifyAny(values: string[]): { token: string; needsUpgrade: boolean 
     }
   }
   return null;
-}
-
-function isSecureRequest(c: any): boolean {
-  if (TRUST_PROXY) {
-    const proto = c.req.header('x-forwarded-proto');
-    if (proto === 'https') return true;
-  }
-  try {
-    const url = new URL(c.req.url, 'http://localhost');
-    if (url.protocol === 'https:') return true;
-  } catch { /* ignore */ }
-  return false;
 }
 
 export const authMiddleware = async (c: any, next: any) => {

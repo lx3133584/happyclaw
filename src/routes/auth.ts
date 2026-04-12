@@ -7,7 +7,7 @@ import crypto from 'crypto';
 import { Hono } from 'hono';
 import type { Variables } from '../web-context.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { getClientIp } from '../utils.js';
+import { getClientIp, isSecureRequest } from '../utils.js';
 import { DATA_DIR } from '../config.js';
 import {
   LoginSchema,
@@ -56,29 +56,12 @@ import { lastActiveCache, invalidateSessionCache, invalidateUserSessions } from 
 import {
   SESSION_COOKIE_NAME_SECURE,
   SESSION_COOKIE_NAME_PLAIN,
-  TRUST_PROXY,
 } from '../config.js';
 import { getSystemSettings } from '../runtime-config.js';
 
 const authRoutes = new Hono<{ Variables: Variables }>();
 
 // --- Helper Functions ---
-
-/** Detect if the current request arrived over HTTPS (direct or behind proxy) */
-function isSecureRequest(c: any): boolean {
-  if (TRUST_PROXY) {
-    const proto = c.req.header('x-forwarded-proto');
-    if (proto === 'https') return true;
-  }
-  // Hono / node-server: URL scheme
-  try {
-    const url = new URL(c.req.url, 'http://localhost');
-    if (url.protocol === 'https:') return true;
-  } catch {
-    /* ignore */
-  }
-  return false;
-}
 
 function getSessionCookieName(secure: boolean): string {
   return secure ? SESSION_COOKIE_NAME_SECURE : SESSION_COOKIE_NAME_PLAIN;
