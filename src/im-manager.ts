@@ -668,7 +668,7 @@ class IMConnectionManager {
     const channel = createMqttChannel({
       brokerUrl: config.brokerUrl,
       clientId: config.clientId,
-      subscribeTopic: config.subscribeTopic || `agents/${config.clientId}/#`,
+      subscribeTopic: config.subscribeTopic || '#',
       username: config.username,
       password: config.password,
     });

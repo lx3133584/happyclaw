@@ -161,7 +161,7 @@ export function MQTTChannelCard() {
               </div>
               <div>
                 <label className="block text-xs text-slate-500 mb-1">
-                  Agent 名称（唯一标识）
+                  Agent 名称（用于标识自己，过滤自发消息）
                 </label>
                 <Input
                   type="text"
@@ -172,13 +172,13 @@ export function MQTTChannelCard() {
               </div>
               <div>
                 <label className="block text-xs text-slate-500 mb-1">
-                  订阅 Topic（留空自动生成）
+                  Topic 过滤器（留空接收所有消息）
                 </label>
                 <Input
                   type="text"
                   value={subscribeTopic}
                   onChange={(e) => setSubscribeTopic(e.target.value)}
-                  placeholder={`agents/${clientId || '{agent-name}'}/#`}
+                  placeholder="# (默认接收所有 topic)"
                 />
               </div>
               <div className="grid md:grid-cols-2 gap-3">
@@ -223,9 +223,10 @@ export function MQTTChannelCard() {
               </Button>
             </div>
 
-            <div className="text-xs text-slate-400 mt-2">
+            <div className="text-xs text-slate-400 mt-2 space-y-0.5">
+              <p>每个 Topic 自动注册为一个独立会话（私聊或群聊）</p>
               <p>
-                消息格式：{`{"id":"uuid","from":"agent-name","text":"...","ts":毫秒时间戳}`}
+                消息格式：{`{"from":"agent-name","text":"...","ts":毫秒时间戳}`}
               </p>
             </div>
           </>

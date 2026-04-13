@@ -4,12 +4,29 @@
  * Lightweight MQTT integration for inter-agent communication.
  * Uses the 'mqtt' npm package (MQTT 3.1.1/5.0 client with auto-reconnect).
  *
- * Message format on the wire:
+ * ## Topic-as-Chat Model
+ *
+ * Each MQTT topic maps to a HappyClaw chat/conversation:
+ *   - Topic "projects/alpha/chat" → JID "mqtt:projects~alpha~chat"
+ *   - Agent replies are published back to the same topic
+ *   - Multiple agents subscribing to the same topic = group chat
+ *
+ * By default, subscribes to "#" (all topics) so any incoming message
+ * auto-registers a new chat — same behavior as other IM channels.
+ *
+ * ## JID Encoding
+ *
+ * MQTT topics contain "/" which conflicts with URL path routing (e.g.
+ * GET /api/groups/:jid/messages). We encode "/" as "~" in JIDs:
+ *   Topic "agents/broadcast" → JID "mqtt:agents~broadcast"
+ *   Literal "~" in topics is escaped as "~~".
+ *
+ * ## Message Format
+ *
  *   { "id": "uuid", "from": "agent-mini", "text": "hello", "ts": 1744201234567 }
  *
- * Topic convention:
- *   agents/{agent-name}/inbox   — direct message to a specific agent
- *   agents/broadcast            — broadcast to all agents
+ * "from" is used for sender display name and self-echo filtering only.
+ * The topic determines which chat the message belongs to.
  */
 import crypto from 'crypto';
 import mqtt from 'mqtt';
@@ -19,12 +36,28 @@ import { notifyNewImMessage } from './message-notifier.js';
 import { broadcastNewMessage } from './web.js';
 import { logger } from './logger.js';
 
+// ─── Topic ↔ JID Encoding ───────────────────────────────────────
+
+/** Encode an MQTT topic for use in a JID (replace "/" with "~", escape literal "~" as "~~"). */
+export function topicToJidSuffix(topic: string): string {
+  return topic.replaceAll('~', '~~').replaceAll('/', '~');
+}
+
+/** Decode a JID suffix back to an MQTT topic. */
+export function jidSuffixToTopic(suffix: string): string {
+  // Use a placeholder to protect escaped "~~" during replacement
+  return suffix
+    .replaceAll('~~', '\x00')
+    .replaceAll('~', '/')
+    .replaceAll('\x00', '~');
+}
+
 // ─── Interfaces ──────────────────────────────────────────────────
 
 export interface MqttConnectionConfig {
   brokerUrl: string;       // e.g. "mqtt://192.168.50.75:1883"
-  clientId: string;        // unique agent name, e.g. "agent-mini-happyclaw"
-  subscribeTopic: string;  // e.g. "agents/agent-mini-happyclaw/#"
+  clientId: string;        // unique agent name for self-echo filtering
+  subscribeTopic: string;  // e.g. "#" (all) or "projects/#" (filtered)
   username?: string;
   password?: string;
 }
@@ -104,7 +137,7 @@ export function createMqttConnection(
               'MQTT connected',
             );
 
-            // Subscribe to configured topic
+            // Subscribe to configured topic (default "#" = all topics)
             client!.subscribe(config.subscribeTopic, { qos: 0 }, (err: Error | null) => {
               if (err) {
                 logger.error({ err }, 'MQTT subscribe failed');
@@ -115,9 +148,6 @@ export function createMqttConnection(
                 );
               }
             });
-
-            // Also subscribe to broadcast
-            client!.subscribe('agents/broadcast', { qos: 0 });
 
             opts.onReady?.();
             resolve(true);
@@ -154,9 +184,8 @@ export function createMqttConnection(
                 text = data.text || raw;
                 ts = data.ts;
               } catch {
-                // Plain text message — extract sender from topic if possible
-                const parts = topic.split('/');
-                senderName = parts.length >= 2 ? parts[1] : 'unknown';
+                // Plain text message
+                senderName = 'unknown';
                 text = raw;
               }
 
@@ -164,7 +193,7 @@ export function createMqttConnection(
               if (senderName === config.clientId) return;
 
               // Dedup: prefer message id, fall back to content hash
-              const dedupKey = msgId || `${senderName}:${ts || ''}:${text.slice(0, 50)}`;
+              const dedupKey = msgId || `${topic}:${senderName}:${ts || ''}:${text.slice(0, 50)}`;
               if (isDuplicate(dedupKey)) return;
 
               // Ignore messages before reconnect
@@ -177,38 +206,40 @@ export function createMqttConnection(
 
               logger.info({ topic, from: senderName }, 'MQTT message received');
 
-              const senderJid = `mqtt:${senderName}`;
+              // Topic-as-Chat: the topic determines the chat, not the sender
+              const chatJid = `mqtt:${topicToJidSuffix(topic)}`;
+              const chatName = topic; // Display the raw topic as chat name
               const timestamp = new Date(ts || Date.now()).toISOString();
               const storedMsgId = crypto.randomUUID();
 
               // Check for slash commands
               if (text.startsWith('/') && opts.onCommand) {
-                opts.onNewChat(senderJid, senderName);
-                storeChatMetadata(senderJid, timestamp, senderName);
+                opts.onNewChat(chatJid, chatName);
+                storeChatMetadata(chatJid, timestamp, chatName);
                 storeMessageDirect(
                   storedMsgId,
-                  senderJid,
-                  senderJid,
+                  chatJid,
+                  chatJid,
                   senderName,
                   text,
                   timestamp,
                   false,
                 );
-                void opts.onCommand(senderJid, text).catch((err: unknown) => {
-                  logger.warn({ err, senderJid }, 'MQTT command handler failed');
+                void opts.onCommand(chatJid, text).catch((err: unknown) => {
+                  logger.warn({ err, chatJid }, 'MQTT command handler failed');
                 });
                 return;
               }
 
-              // Auto-register chat
-              opts.onNewChat(senderJid, senderName);
+              // Auto-register chat (topic → chat)
+              opts.onNewChat(chatJid, chatName);
 
               // Store message in database
-              storeChatMetadata(senderJid, timestamp, senderName);
+              storeChatMetadata(chatJid, timestamp, chatName);
               storeMessageDirect(
                 storedMsgId,
-                senderJid,
-                senderJid,
+                chatJid,
+                chatJid,
                 senderName,
                 text,
                 timestamp,
@@ -219,10 +250,10 @@ export function createMqttConnection(
               notifyNewImMessage();
 
               // Broadcast to web clients
-              broadcastNewMessage(senderJid, {
+              broadcastNewMessage(chatJid, {
                 id: storedMsgId,
-                chat_jid: senderJid,
-                sender: senderJid,
+                chat_jid: chatJid,
+                sender: chatJid,
                 sender_name: senderName,
                 content: text,
                 timestamp,
@@ -264,7 +295,8 @@ export function createMqttConnection(
         logger.warn({ chatId }, 'MQTT not connected, skip publishing');
         return;
       }
-      const topic = `agents/${chatId}/inbox`;
+      // chatId is the JID suffix (topic-encoded); decode back to real topic
+      const topic = jidSuffixToTopic(chatId);
       const payload = JSON.stringify({
         id: crypto.randomUUID(),
         from: config.clientId,

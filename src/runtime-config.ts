@@ -3523,9 +3523,9 @@ export function saveUserMqttConfig(
     updatedAt: new Date().toISOString(),
   };
 
-  // Default subscribe topic if not set
-  if (!normalized.subscribeTopic && normalized.clientId) {
-    normalized.subscribeTopic = `agents/${normalized.clientId}/#`;
+  // Default subscribe topic: "#" (all topics) for auto-discovery
+  if (!normalized.subscribeTopic) {
+    normalized.subscribeTopic = '#';
   }
 
   const payload: StoredMqttConfigV1 = {
