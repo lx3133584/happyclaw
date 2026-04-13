@@ -17,7 +17,7 @@ export const TaskPatchSchema = z.object({
   status: z.enum(['active', 'paused']).optional(),
   next_run: z.string().optional(),
   notify_channels: z
-    .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk', 'discord']))
+    .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk', 'discord', 'mqtt']))
     .nullable()
     .optional(),
 });
@@ -39,7 +39,7 @@ export const TaskCreateSchema = z
     execution_mode: z.enum(['host', 'container']).optional(),
     script_command: z.string().max(4096).optional(),
     notify_channels: z
-      .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk', 'discord']))
+      .array(z.enum(['feishu', 'telegram', 'qq', 'wechat', 'dingtalk', 'discord', 'mqtt']))
       .nullable()
       .optional(),
   })
@@ -743,5 +743,25 @@ export const DiscordConfigSchema = z
       data.clearBotToken === true ||
       typeof data.enabled === 'boolean' ||
       typeof data.streamingMode === 'string',
+    { message: 'At least one config field must be provided' },
+  );
+
+export const MqttConfigSchema = z
+  .object({
+    brokerUrl: z.string().max(2000).optional(),
+    clientId: z.string().max(200).optional(),
+    subscribeTopic: z.string().max(500).optional(),
+    username: z.string().max(200).optional(),
+    password: z.string().max(2000).optional(),
+    clearPassword: z.boolean().optional(),
+    enabled: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.brokerUrl === 'string' ||
+      typeof data.clientId === 'string' ||
+      typeof data.password === 'string' ||
+      data.clearPassword === true ||
+      typeof data.enabled === 'boolean',
     { message: 'At least one config field must be provided' },
   );
