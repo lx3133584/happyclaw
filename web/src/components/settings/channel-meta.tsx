@@ -5,6 +5,7 @@ export const CHANNEL_LABEL: Record<string, string> = {
   wechat: '微信',
   dingtalk: '钉钉',
   discord: 'Discord',
+  mqtt: 'MQTT',
 };
 
 export const CHANNEL_COLORS: Record<string, string> = {
@@ -14,6 +15,7 @@ export const CHANNEL_COLORS: Record<string, string> = {
   wechat: 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300',
   dingtalk: 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300',
   discord: 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300',
+  mqtt: 'bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300',
 };
 
 const FeishuIcon = () => (
@@ -53,6 +55,12 @@ const DiscordIcon = () => (
   </svg>
 );
 
+const MqttIcon = () => (
+  <svg viewBox="0 0 24 24" className="w-3 h-3" fill="currentColor">
+    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+  </svg>
+);
+
 export const CHANNEL_ICON: Record<string, React.FC> = {
   feishu: FeishuIcon,
   telegram: TelegramIcon,
@@ -60,6 +68,7 @@ export const CHANNEL_ICON: Record<string, React.FC> = {
   wechat: WeChatIcon,
   dingtalk: DingTalkIcon,
   discord: DiscordIcon,
+  mqtt: MqttIcon,
 };
 
 /** Render a channel badge with icon + label */

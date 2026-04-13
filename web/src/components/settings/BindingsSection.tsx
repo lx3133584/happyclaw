@@ -10,7 +10,7 @@ import { BindingTargetDialog } from './BindingTargetDialog';
 import type { AvailableImGroup } from '../../types';
 import type { BindingTarget } from './hooks/useImBindings';
 
-type ChannelFilter = 'all' | 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord';
+type ChannelFilter = 'all' | 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord' | 'mqtt';
 
 export function BindingsSection() {
   const { bindings, loading, targets, targetsLoading, reload, rebind, error: hookError, clearError: clearHookError } = useImBindings();
@@ -34,6 +34,7 @@ export function BindingsSection() {
     if (types.has('wechat')) all.push({ key: 'wechat', label: '微信' });
     if (types.has('dingtalk')) all.push({ key: 'dingtalk', label: '钉钉' });
     if (types.has('discord')) all.push({ key: 'discord', label: 'Discord' });
+    if (types.has('mqtt')) all.push({ key: 'mqtt', label: 'MQTT' });
     return all;
   }, [bindings]);
 
