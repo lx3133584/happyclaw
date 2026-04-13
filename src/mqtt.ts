@@ -67,6 +67,12 @@ export interface MqttConnectOpts {
   onNewChat: (jid: string, name: string) => void;
   ignoreMessagesBefore?: number;
   onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+  /** Resolve Sub-Agent routing: returns effectiveJid + agentId if bound */
+  resolveEffectiveChatJid?: (
+    chatJid: string,
+  ) => { effectiveJid: string; agentId: string | null } | null;
+  /** Trigger conversation agent processing after routing */
+  onAgentMessage?: (baseChatJid: string, agentId: string) => void;
 }
 
 export interface MqttConnection {
@@ -234,31 +240,50 @@ export function createMqttConnection(
               // Auto-register chat (topic → chat)
               opts.onNewChat(chatJid, chatName);
 
-              // Store message in database
-              storeChatMetadata(chatJid, timestamp, chatName);
+              // Resolve Sub-Agent routing (same pattern as telegram.ts)
+              const agentRouting = opts.resolveEffectiveChatJid?.(chatJid);
+              const targetJid = agentRouting?.effectiveJid ?? chatJid;
+
+              // Store message under targetJid (may be virtual JID for Sub-Agent)
+              storeChatMetadata(targetJid, timestamp, chatName);
               storeMessageDirect(
                 storedMsgId,
-                chatJid,
+                targetJid,
                 chatJid,
                 senderName,
                 text,
                 timestamp,
                 false,
+                { sourceJid: chatJid },
               );
 
               // Notify message polling
               notifyNewImMessage();
 
               // Broadcast to web clients
-              broadcastNewMessage(chatJid, {
-                id: storedMsgId,
-                chat_jid: chatJid,
-                sender: chatJid,
-                sender_name: senderName,
-                content: text,
-                timestamp,
-                is_from_me: false,
-              });
+              broadcastNewMessage(
+                targetJid,
+                {
+                  id: storedMsgId,
+                  chat_jid: targetJid,
+                  source_jid: chatJid,
+                  sender: chatJid,
+                  sender_name: senderName,
+                  content: text,
+                  timestamp,
+                  is_from_me: false,
+                },
+                agentRouting?.agentId ?? undefined,
+              );
+
+              // Trigger conversation agent if routed to Sub-Agent
+              if (agentRouting?.agentId) {
+                opts.onAgentMessage?.(chatJid, agentRouting.agentId);
+                logger.info(
+                  { chatJid, targetJid, agentId: agentRouting.agentId, from: senderName },
+                  'MQTT message routed to conversation agent',
+                );
+              }
             } catch (err) {
               logger.warn({ err, topic }, 'Failed to process MQTT message');
             }

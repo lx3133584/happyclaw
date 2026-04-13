@@ -714,6 +714,8 @@ export function createMqttChannel(
           onNewChat: opts.onNewChat,
           ignoreMessagesBefore: opts.ignoreMessagesBefore,
           onCommand: opts.onCommand,
+          resolveEffectiveChatJid: opts.resolveEffectiveChatJid,
+          onAgentMessage: opts.onAgentMessage,
         });
         if (!ok) {
           inner = null;

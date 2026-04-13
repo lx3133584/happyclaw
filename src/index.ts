@@ -7117,6 +7117,8 @@ async function connectUserIMChannels(
       ? imManager.connectUserMQTT(userId, mqttConfig, onNewChat, {
           ignoreMessagesBefore,
           onCommand: handleCommand,
+          resolveEffectiveChatJid,
+          onAgentMessage,
         })
       : Promise.resolve(false);
 
@@ -7728,6 +7730,8 @@ async function main(): Promise<void> {
           {
             ignoreMessagesBefore,
             onCommand: handleCommand,
+            resolveEffectiveChatJid: buildResolveEffectiveChatJid(),
+            onAgentMessage: buildOnAgentMessage(),
           },
         );
         logger.info(

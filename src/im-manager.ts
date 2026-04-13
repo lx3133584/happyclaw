@@ -658,6 +658,8 @@ class IMConnectionManager {
     options?: {
       ignoreMessagesBefore?: number;
       onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+      resolveEffectiveChatJid?: (chatJid: string) => { effectiveJid: string; agentId: string | null } | null;
+      onAgentMessage?: (baseChatJid: string, agentId: string) => void;
     },
   ): Promise<boolean> {
     if (!config.brokerUrl || !config.clientId) {
@@ -680,6 +682,8 @@ class IMConnectionManager {
       onNewChat,
       ignoreMessagesBefore: options?.ignoreMessagesBefore,
       onCommand: options?.onCommand,
+      resolveEffectiveChatJid: options?.resolveEffectiveChatJid,
+      onAgentMessage: options?.onAgentMessage,
     });
   }
 
