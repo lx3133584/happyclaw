@@ -8049,9 +8049,13 @@ async function main(): Promise<void> {
       });
     },
     storeResultAndNotify: async (chatJid, text, options) => {
+      // If the task's chat is itself an IM channel (e.g. mqtt:topic),
+      // send the result directly to that channel AND store it.
+      // This way group-mode tasks bound to IM chats work like normal conversations.
+      const chatIsImChannel = !!getChannelType(chatJid);
       if (!options.skipStore) {
         await sendMessage(chatJid, text, {
-          sendToIM: false,
+          sendToIM: chatIsImChannel,
           source: 'scheduled_task',
           messageMeta: {
             sourceKind: options.sourceKind || 'sdk_final',
@@ -8063,10 +8067,14 @@ async function main(): Promise<void> {
         const ownerHome = getUserHomeGroup(options.ownerId);
         if (ownerHome?.folder) {
           const localImages = extractLocalImImagePaths(text, ownerHome.folder);
+          // If we already sent to the chat's IM channel above,
+          // exclude it from broadcast to avoid duplicate delivery.
+          const alreadySent = new Set<string>();
+          if (chatIsImChannel) alreadySent.add(chatJid);
           broadcastToOwnerIMChannels(
             options.ownerId,
             ownerHome.folder,
-            new Set<string>(),
+            alreadySent,
             (jid) => sendImWithFailTracking(jid, text, localImages),
             options.notifyChannels,
           );
