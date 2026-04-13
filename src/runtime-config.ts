@@ -3457,6 +3457,99 @@ export function saveUserDiscordConfig(
   return normalized;
 }
 
+// ========== MQTT User IM Config ==========
+
+export interface UserMqttConfig {
+  brokerUrl: string;
+  clientId: string;
+  subscribeTopic: string;
+  username?: string;
+  password?: string;
+  enabled?: boolean;
+  updatedAt: string | null;
+}
+
+interface StoredMqttConfigV1 {
+  version: 1;
+  brokerUrl: string;
+  clientId: string;
+  subscribeTopic: string;
+  username?: string;
+  enabled?: boolean;
+  updatedAt: string;
+  secret: EncryptedSecrets;
+}
+
+interface MqttSecretPayload {
+  password?: string;
+}
+
+export function getUserMqttConfig(userId: string): UserMqttConfig | null {
+  const filePath = path.join(userImDir(userId), 'mqtt.json');
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (parsed.version !== 1) return null;
+
+    const stored = parsed as unknown as StoredMqttConfigV1;
+    const secret = decryptChannelSecret<MqttSecretPayload>(stored.secret);
+    return {
+      brokerUrl: (stored.brokerUrl ?? '').trim(),
+      clientId: (stored.clientId ?? '').trim(),
+      subscribeTopic: (stored.subscribeTopic ?? '').trim(),
+      username: stored.username,
+      password: secret.password,
+      enabled: stored.enabled,
+      updatedAt: stored.updatedAt || null,
+    };
+  } catch (err) {
+    logger.warn({ err, userId }, 'Failed to read user MQTT config');
+    return null;
+  }
+}
+
+export function saveUserMqttConfig(
+  userId: string,
+  next: Omit<UserMqttConfig, 'updatedAt'>,
+): UserMqttConfig {
+  const normalized: UserMqttConfig = {
+    brokerUrl: (next.brokerUrl ?? '').trim(),
+    clientId: (next.clientId ?? '').trim(),
+    subscribeTopic: (next.subscribeTopic ?? '').trim(),
+    username: next.username?.trim() || undefined,
+    password: next.password || undefined,
+    enabled: next.enabled,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Default subscribe topic if not set
+  if (!normalized.subscribeTopic && normalized.clientId) {
+    normalized.subscribeTopic = `agents/${normalized.clientId}/#`;
+  }
+
+  const payload: StoredMqttConfigV1 = {
+    version: 1,
+    brokerUrl: normalized.brokerUrl,
+    clientId: normalized.clientId,
+    subscribeTopic: normalized.subscribeTopic,
+    username: normalized.username,
+    enabled: normalized.enabled,
+    updatedAt: normalized.updatedAt || new Date().toISOString(),
+    secret: encryptChannelSecret<MqttSecretPayload>({
+      password: normalized.password,
+    }),
+  };
+
+  const dir = userImDir(userId);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, 'mqtt.json');
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+  fs.renameSync(tmp, filePath);
+  return normalized;
+}
+
 // ─── System settings (plain JSON, no encryption) ─────────────────
 
 const SYSTEM_SETTINGS_FILE = path.join(
