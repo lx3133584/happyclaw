@@ -25,6 +25,7 @@ import {
   WeChatConfigSchema,
   DingTalkConfigSchema,
   DiscordConfigSchema,
+  MqttConfigSchema,
   RegistrationConfigSchema,
   AppearanceConfigSchema,
   SystemSettingsSchema,
@@ -75,6 +76,8 @@ import {
   saveUserDingTalkConfig,
   getUserDiscordConfig,
   saveUserDiscordConfig,
+  getUserMqttConfig,
+  saveUserMqttConfig,
   updateAllSessionCredentials,
 } from '../runtime-config.js';
 import type {
@@ -104,7 +107,7 @@ const configRoutes = new Hono<{ Variables: Variables }>();
  */
 function countOtherEnabledImChannels(
   userId: string,
-  excludeChannel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord',
+  excludeChannel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord' | 'mqtt',
 ): number {
   let count = 0;
   if (excludeChannel !== 'feishu' && getUserFeishuConfig(userId)?.enabled)
@@ -117,6 +120,8 @@ function countOtherEnabledImChannels(
   if (excludeChannel !== 'dingtalk' && getUserDingTalkConfig(userId)?.enabled)
     count++;
   if (excludeChannel !== 'discord' && getUserDiscordConfig(userId)?.enabled)
+    count++;
+  if (excludeChannel !== 'mqtt' && getUserMqttConfig(userId)?.enabled)
     count++;
   return count;
 }
@@ -1301,6 +1306,7 @@ configRoutes.get('/user-im/status', authMiddleware, (c) => {
     wechat: deps?.isUserWeChatConnected?.(user.id) ?? false,
     dingtalk: deps?.isUserDingTalkConnected?.(user.id) ?? false,
     discord: deps?.isUserDiscordConnected?.(user.id) ?? false,
+    mqtt: deps?.isUserMQTTConnected?.(user.id) ?? false,
   });
 });
 
@@ -2206,6 +2212,195 @@ configRoutes.post('/user-im/discord/test', authMiddleware, async (c) => {
     // Defense-in-depth: clear the race timer in both success and failure paths
     // so the process doesn't keep an active handle for up to 10s after the test.
     if (timeoutId) clearTimeout(timeoutId);
+  }
+});
+
+// ─── Per-user MQTT IM config ────────────────────────────────────
+
+configRoutes.get('/user-im/mqtt', authMiddleware, (c) => {
+  const user = c.get('user') as AuthUser;
+  try {
+    const config = getUserMqttConfig(user.id);
+    const connected = deps?.isUserMQTTConnected?.(user.id) ?? false;
+    if (!config) {
+      return c.json({
+        brokerUrl: '',
+        clientId: '',
+        subscribeTopic: '',
+        username: '',
+        hasPassword: false,
+        enabled: false,
+        updatedAt: null,
+        connected,
+      });
+    }
+    return c.json({
+      brokerUrl: config.brokerUrl,
+      clientId: config.clientId,
+      subscribeTopic: config.subscribeTopic,
+      username: config.username || '',
+      hasPassword: !!config.password,
+      enabled: config.enabled ?? false,
+      updatedAt: config.updatedAt,
+      connected,
+    });
+  } catch (err) {
+    logger.error({ err }, 'Failed to load user MQTT config');
+    return c.json({ error: 'Failed to load MQTT config' }, 500);
+  }
+});
+
+configRoutes.put('/user-im/mqtt', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const body = await c.req.json().catch(() => ({}));
+  const validation = MqttConfigSchema.safeParse(body);
+  if (!validation.success) {
+    return c.json(
+      { error: 'Invalid request body', details: validation.error.format() },
+      400,
+    );
+  }
+
+  // Billing: check IM channel limit when enabling
+  if (validation.data.enabled === true && isBillingEnabled()) {
+    const current = getUserMqttConfig(user.id);
+    if (!current?.enabled) {
+      const limit = checkImChannelLimit(
+        user.id,
+        user.role,
+        countOtherEnabledImChannels(user.id, 'mqtt'),
+      );
+      if (!limit.allowed) {
+        return c.json({ error: limit.reason }, 403);
+      }
+    }
+  }
+
+  // Merge with existing config (password preservation)
+  const current = getUserMqttConfig(user.id);
+  const next = {
+    brokerUrl: current?.brokerUrl || '',
+    clientId: current?.clientId || '',
+    subscribeTopic: current?.subscribeTopic || '',
+    username: current?.username || '',
+    password: current?.password || '',
+    enabled: current?.enabled ?? true,
+  };
+
+  if (typeof validation.data.brokerUrl === 'string') {
+    next.brokerUrl = validation.data.brokerUrl.trim();
+  }
+  if (typeof validation.data.clientId === 'string') {
+    next.clientId = validation.data.clientId.trim();
+  }
+  if (typeof validation.data.subscribeTopic === 'string') {
+    next.subscribeTopic = validation.data.subscribeTopic.trim();
+  }
+  if (typeof validation.data.username === 'string') {
+    next.username = validation.data.username.trim();
+  }
+  if (typeof validation.data.password === 'string') {
+    const pw = validation.data.password.trim();
+    if (pw) next.password = pw;
+  } else if (validation.data.clearPassword === true) {
+    next.password = '';
+  }
+  if (typeof validation.data.enabled === 'boolean') {
+    next.enabled = validation.data.enabled;
+  } else if (!current && (next.brokerUrl || next.clientId)) {
+    // First-time config with credentials: auto-enable
+    next.enabled = true;
+  }
+
+  try {
+    const saved = saveUserMqttConfig(user.id, {
+      brokerUrl: next.brokerUrl,
+      clientId: next.clientId,
+      subscribeTopic: next.subscribeTopic,
+      username: next.username || undefined,
+      password: next.password || undefined,
+      enabled: next.enabled,
+    });
+
+    // Hot-reload
+    if (deps?.reloadUserIMConfig) {
+      try {
+        await deps.reloadUserIMConfig(user.id, 'mqtt');
+      } catch (err) {
+        logger.warn(
+          { err, userId: user.id },
+          'Failed to hot-reload MQTT connection',
+        );
+      }
+    }
+
+    const connected = deps?.isUserMQTTConnected?.(user.id) ?? false;
+    return c.json({
+      brokerUrl: saved.brokerUrl,
+      clientId: saved.clientId,
+      subscribeTopic: saved.subscribeTopic,
+      username: saved.username || '',
+      hasPassword: !!saved.password,
+      enabled: saved.enabled ?? false,
+      updatedAt: saved.updatedAt,
+      connected,
+    });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Invalid MQTT config';
+    logger.warn({ err }, 'Invalid MQTT config');
+    return c.json({ error: message }, 400);
+  }
+});
+
+configRoutes.post('/user-im/mqtt/test', authMiddleware, async (c) => {
+  const user = c.get('user') as AuthUser;
+  const config = getUserMqttConfig(user.id);
+
+  if (!config?.brokerUrl) {
+    return c.json({ error: 'MQTT broker URL not configured' }, 400);
+  }
+
+  try {
+    const mqttLib = await import('mqtt');
+    const testClient = mqttLib.connect(config.brokerUrl, {
+      clientId:
+        'happyclaw-test-' + Math.random().toString(36).slice(2, 8),
+      connectTimeout: 10_000,
+      username: config.username,
+      password: config.password,
+    });
+
+    const result = await new Promise<
+      { success: true } | { error: string }
+    >((resolve) => {
+      const timeout = setTimeout(() => {
+        testClient.end(true);
+        resolve({ error: 'Connection timeout (10s)' });
+      }, 12_000);
+
+      testClient.on('connect', () => {
+        clearTimeout(timeout);
+        testClient.end();
+        resolve({ success: true });
+      });
+
+      testClient.on('error', (err: Error) => {
+        clearTimeout(timeout);
+        testClient.end(true);
+        resolve({ error: err.message });
+      });
+    });
+
+    if ('success' in result) {
+      return c.json(result);
+    }
+    return c.json(result, 400);
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Connection test failed';
+    logger.warn({ err }, 'MQTT connection test failed');
+    return c.json({ error: message }, 400);
   }
 });
 
