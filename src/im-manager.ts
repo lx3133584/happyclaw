@@ -16,6 +16,7 @@ import {
   createWeChatChannel,
   createDingTalkChannel,
   createDiscordChannel,
+  createMqttChannel,
 } from './im-channel.js';
 import { parseFeishuRouteTarget, type FeishuConnectionConfig } from './feishu.js';
 import type { TelegramConnectionConfig } from './telegram.js';
@@ -23,6 +24,7 @@ import type { QQConnectionConfig } from './qq.js';
 import type { WeChatConnectionConfig } from './wechat.js';
 import type { DingTalkConnectionConfig } from './dingtalk.js';
 import type { DiscordConnectionConfig } from './discord.js';
+import type { MqttConnectionConfig } from './mqtt.js';
 import type { StreamingSession } from './im-channel.js';
 import { getRegisteredGroup, getJidsByFolder } from './db.js';
 import { getUserDingTalkConfig } from './runtime-config.js';
@@ -71,6 +73,15 @@ export interface DiscordConnectConfig {
   botToken: string;
   enabled?: boolean;
   streamingMode?: 'edit' | 'off';
+}
+
+export interface MqttConnectConfig {
+  brokerUrl: string;
+  clientId: string;
+  subscribeTopic: string;
+  username?: string;
+  password?: string;
+  enabled?: boolean;
 }
 
 export interface ConnectFeishuOptions {
@@ -640,6 +651,42 @@ class IMConnectionManager {
     await this.disconnectChannel(userId, 'discord');
   }
 
+  async connectUserMQTT(
+    userId: string,
+    config: MqttConnectConfig,
+    onNewChat: (chatJid: string, chatName: string) => void,
+    options?: {
+      ignoreMessagesBefore?: number;
+      onCommand?: (chatJid: string, command: string) => Promise<string | null>;
+    },
+  ): Promise<boolean> {
+    if (!config.brokerUrl || !config.clientId) {
+      logger.info({ userId }, 'MQTT config empty, skipping connection');
+      return false;
+    }
+
+    const channel = createMqttChannel({
+      brokerUrl: config.brokerUrl,
+      clientId: config.clientId,
+      subscribeTopic: config.subscribeTopic || `agents/${config.clientId}/#`,
+      username: config.username,
+      password: config.password,
+    });
+
+    return this.connectChannel(userId, 'mqtt', channel, {
+      onReady: () => {
+        logger.info({ userId }, 'User MQTT connection established');
+      },
+      onNewChat,
+      ignoreMessagesBefore: options?.ignoreMessagesBefore,
+      onCommand: options?.onCommand,
+    });
+  }
+
+  async disconnectUserMQTT(userId: string): Promise<void> {
+    await this.disconnectChannel(userId, 'mqtt');
+  }
+
   /**
    * Send a message to a Feishu chat.
    * @deprecated Use sendMessage(jid, text) which auto-routes.
@@ -758,6 +805,11 @@ class IMConnectionManager {
   isDiscordConnected(userId: string): boolean {
     const conn = this.connections.get(userId);
     return conn?.channels.get('discord')?.isConnected() ?? false;
+  }
+
+  isMQTTConnected(userId: string): boolean {
+    const conn = this.connections.get(userId);
+    return conn?.channels.get('mqtt')?.isConnected() ?? false;
   }
 
   /** Get the Feishu channel for a user (for direct access like syncGroups) */

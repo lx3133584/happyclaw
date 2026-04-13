@@ -34,6 +34,10 @@ import {
   type DiscordConnection,
   type DiscordConnectionConfig,
 } from './discord.js';
+import {
+  createMqttConnection,
+  type MqttConnectionConfig,
+} from './mqtt.js';
 import { logger } from './logger.js';
 import type { FeishuMessageMeta } from './types.js';
 import {
@@ -686,6 +690,66 @@ export function createDingTalkChannel(
     ): Promise<StreamingSession | undefined> {
       if (!inner?.createStreamingSession) return undefined;
       return inner.createStreamingSession(chatId, onCardCreated);
+    },
+  };
+
+  return channel;
+}
+
+// ─── MQTT Adapter ────────────────────────────────────────────────
+
+export function createMqttChannel(
+  config: MqttConnectionConfig,
+): IMChannel {
+  let inner: ReturnType<typeof createMqttConnection> | null = null;
+
+  const channel: IMChannel = {
+    channelType: 'mqtt',
+
+    async connect(opts: IMChannelConnectOpts): Promise<boolean> {
+      inner = createMqttConnection(config);
+      try {
+        const ok = await inner.connect({
+          onReady: opts.onReady,
+          onNewChat: opts.onNewChat,
+          ignoreMessagesBefore: opts.ignoreMessagesBefore,
+          onCommand: opts.onCommand,
+        });
+        if (!ok) {
+          inner = null;
+        }
+        return ok;
+      } catch (err) {
+        logger.error({ err }, 'MQTT channel connect failed');
+        inner = null;
+        return false;
+      }
+    },
+
+    async disconnect(): Promise<void> {
+      if (inner) {
+        await inner.disconnect();
+        inner = null;
+      }
+    },
+
+    async sendMessage(chatId: string, text: string): Promise<void> {
+      if (!inner) {
+        logger.warn(
+          { chatId },
+          'MQTT channel not connected, skip sending message',
+        );
+        return;
+      }
+      await inner.sendMessage(chatId, text);
+    },
+
+    async setTyping(_chatId: string, _isTyping: boolean): Promise<void> {
+      // MQTT does not support typing indicators
+    },
+
+    isConnected(): boolean {
+      return inner?.isConnected() ?? false;
     },
   };
 
