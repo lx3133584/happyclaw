@@ -92,6 +92,7 @@ export function createMqttConnection(
         return new Promise<boolean>((resolve) => {
           const timeout = setTimeout(() => {
             logger.warn({ broker: config.brokerUrl }, 'MQTT connect timeout');
+            client!.end(true);
             resolve(false);
           }, 15_000);
 
@@ -125,6 +126,8 @@ export function createMqttConnection(
           client!.on('error', (err: Error) => {
             clearTimeout(timeout);
             logger.error({ err }, 'MQTT connection error');
+            client!.end(true);
+            client = null;
             resolve(false);
           });
 
@@ -180,20 +183,19 @@ export function createMqttConnection(
 
               // Check for slash commands
               if (text.startsWith('/') && opts.onCommand) {
-                void opts.onCommand(senderJid, text).then((reply) => {
-                  if (reply) {
-                    // Command handled — store both the command and reply
-                    storeChatMetadata(senderJid, timestamp, senderName);
-                    storeMessageDirect(
-                      storedMsgId,
-                      senderJid,
-                      senderJid,
-                      senderName,
-                      text,
-                      timestamp,
-                      false,
-                    );
-                  }
+                opts.onNewChat(senderJid, senderName);
+                storeChatMetadata(senderJid, timestamp, senderName);
+                storeMessageDirect(
+                  storedMsgId,
+                  senderJid,
+                  senderJid,
+                  senderName,
+                  text,
+                  timestamp,
+                  false,
+                );
+                void opts.onCommand(senderJid, text).catch((err: unknown) => {
+                  logger.warn({ err, senderJid }, 'MQTT command handler failed');
                 });
                 return;
               }
@@ -247,15 +249,14 @@ export function createMqttConnection(
     },
 
     async disconnect(): Promise<void> {
-      if (client) {
-        return new Promise<void>((resolve) => {
-          client!.end(false, {}, () => {
-            connected = false;
-            client = null;
-            resolve();
-          });
+      if (!client) return;
+      return new Promise<void>((resolve) => {
+        client!.end(false, {}, () => {
+          connected = false;
+          client = null;
+          resolve();
         });
-      }
+      });
     },
 
     async sendMessage(chatId: string, text: string): Promise<void> {
