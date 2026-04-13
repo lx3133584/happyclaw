@@ -124,6 +124,7 @@ import {
   getUserWeChatConfig,
   getUserDingTalkConfig,
   getUserDiscordConfig,
+  getUserMqttConfig,
   getSystemSettings,
   saveUserFeishuConfig,
   saveUserTelegramConfig,
@@ -136,6 +137,7 @@ import type {
   WeChatConnectConfig,
   DingTalkConnectConfig,
   DiscordConnectConfig,
+  MqttConnectConfig,
 } from './im-manager.js';
 import { GroupQueue } from './group-queue.js';
 import { startSchedulerLoop, triggerTaskNow } from './task-scheduler.js';
@@ -6976,6 +6978,7 @@ async function connectUserIMChannels(
   wechatConfig?: WeChatConnectConfig | null,
   dingtalkConfig?: DingTalkConnectConfig | null,
   discordConfig?: DiscordConnectConfig | null,
+  mqttConfig?: MqttConnectConfig | null,
   ignoreMessagesBefore?: number,
 ): Promise<{
   feishu: boolean;
@@ -6984,6 +6987,7 @@ async function connectUserIMChannels(
   wechat: boolean;
   dingtalk: boolean;
   discord: boolean;
+  mqtt: boolean;
 }> {
   const onNewChat = buildOnNewChat(userId, homeFolder);
   const resolveGroupFolder = (chatJid: string): string | undefined => {
@@ -7105,16 +7109,28 @@ async function connectUserIMChannels(
         })
       : Promise.resolve(false);
 
-  const [feishu, telegram, qq, wechat, dingtalk, discord] = await Promise.all([
+  const mqttTask =
+    mqttConfig &&
+    mqttConfig.enabled !== false &&
+    mqttConfig.brokerUrl &&
+    mqttConfig.clientId
+      ? imManager.connectUserMQTT(userId, mqttConfig, onNewChat, {
+          ignoreMessagesBefore,
+          onCommand: handleCommand,
+        })
+      : Promise.resolve(false);
+
+  const [feishu, telegram, qq, wechat, dingtalk, discord, mqtt] = await Promise.all([
     feishuTask,
     telegramTask,
     qqTask,
     wechatTask,
     dingtalkTask,
     discordTask,
+    mqttTask,
   ]);
 
-  return { feishu, telegram, qq, wechat, dingtalk, discord };
+  return { feishu, telegram, qq, wechat, dingtalk, discord, mqtt };
 }
 
 function movePathWithFallback(src: string, dst: string): void {
@@ -7520,7 +7536,7 @@ async function main(): Promise<void> {
   // Reload a per-user IM channel (hot-reload on user-im config save)
   const reloadUserIMConfig = async (
     userId: string,
-    channel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord',
+    channel: 'feishu' | 'telegram' | 'qq' | 'wechat' | 'dingtalk' | 'discord' | 'mqtt',
   ): Promise<boolean> => {
     const homeGroup = getUserHomeGroup(userId);
     if (!homeGroup) {
@@ -7689,6 +7705,39 @@ async function main(): Promise<void> {
       }
       logger.info({ userId }, 'User Discord channel disabled via hot-reload');
       return false;
+    } else if (channel === 'mqtt') {
+      await imManager.disconnectUserMQTT(userId);
+      const config = getUserMqttConfig(userId);
+      if (
+        config &&
+        config.enabled !== false &&
+        config.brokerUrl &&
+        config.clientId
+      ) {
+        const connected = await imManager.connectUserMQTT(
+          userId,
+          {
+            brokerUrl: config.brokerUrl,
+            clientId: config.clientId,
+            subscribeTopic: config.subscribeTopic,
+            username: config.username,
+            password: config.password,
+            enabled: config.enabled,
+          },
+          onNewChat,
+          {
+            ignoreMessagesBefore,
+            onCommand: handleCommand,
+          },
+        );
+        logger.info(
+          { userId, connected },
+          'User MQTT connection hot-reloaded',
+        );
+        return connected;
+      }
+      logger.info({ userId }, 'User MQTT channel disabled via hot-reload');
+      return false;
     } else {
       // WeChat
       await imManager.disconnectUserWeChat(userId);
@@ -7761,6 +7810,8 @@ async function main(): Promise<void> {
       imManager.isDingTalkConnected(userId),
     isUserDiscordConnected: (userId: string) =>
       imManager.isDiscordConnected(userId),
+    isUserMQTTConnected: (userId: string) =>
+      imManager.isMQTTConnected(userId),
     processAgentConversation,
     getFeishuChatInfo: (userId: string, chatId: string) =>
       imManager.getFeishuChatInfo(userId, chatId),
@@ -8083,6 +8134,7 @@ async function main(): Promise<void> {
     const userWeChat = getUserWeChatConfig(user.id);
     const userDingTalk = getUserDingTalkConfig(user.id);
     const userDiscord = getUserDiscordConfig(user.id);
+    const userMqtt = getUserMqttConfig(user.id);
 
     // Determine effective Feishu config: per-user > global (admin only)
     let effectiveFeishu: FeishuConnectConfig | null = null;
@@ -8164,13 +8216,27 @@ async function main(): Promise<void> {
       };
     }
 
+    // Determine effective MQTT config: per-user only
+    let effectiveMqtt: MqttConnectConfig | null = null;
+    if (userMqtt && userMqtt.brokerUrl && userMqtt.clientId) {
+      effectiveMqtt = {
+        brokerUrl: userMqtt.brokerUrl,
+        clientId: userMqtt.clientId,
+        subscribeTopic: userMqtt.subscribeTopic,
+        username: userMqtt.username,
+        password: userMqtt.password,
+        enabled: userMqtt.enabled,
+      };
+    }
+
     if (
       !effectiveFeishu &&
       !effectiveTelegram &&
       !effectiveQQ &&
       !effectiveWeChat &&
       !effectiveDingTalk &&
-      !effectiveDiscord
+      !effectiveDiscord &&
+      !effectiveMqtt
     )
       continue;
 
@@ -8184,6 +8250,7 @@ async function main(): Promise<void> {
         effectiveWeChat,
         effectiveDingTalk,
         effectiveDiscord,
+        effectiveMqtt,
         Date.now(),
       );
       if (result.feishu) anyFeishuConnected = true;
@@ -8196,6 +8263,7 @@ async function main(): Promise<void> {
           wechat: result.wechat,
           dingtalk: result.dingtalk,
           discord: result.discord,
+          mqtt: result.mqtt,
         },
         'User IM channels connected',
       );
