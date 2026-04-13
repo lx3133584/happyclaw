@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { query, HookCallback, PreCompactHookInput, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { detectImageMimeTypeFromBase64Strict } from './image-detector.js';
 import { getChannelFromJid } from './channel-prefixes.js';
@@ -103,7 +104,7 @@ const IMAGE_MAX_DIMENSION = 8000; // Anthropic API 限制
 // ── 系统提示词优化：安全守则（从独立 Markdown 文件加载，始终注入所有容器） ──
 
 const SECURITY_RULES_PATH = path.join(
-  path.dirname(new URL(import.meta.url).pathname),
+  path.dirname(fileURLToPath(import.meta.url)),
   '..',
   'prompts',
   'security-rules.md',
