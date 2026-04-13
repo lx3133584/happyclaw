@@ -78,7 +78,7 @@ export interface DiscordConnectConfig {
 export interface MqttConnectConfig {
   brokerUrl: string;
   clientId: string;
-  subscribeTopic: string;
+  subscribeTopic?: string;
   username?: string;
   password?: string;
   enabled?: boolean;
